@@ -1,6 +1,9 @@
-import time
+import pandas as pd
 import os
-from dotenv import load_dotenv
+from pathlib import Path
+from typing import Optional, Dict, Any
+import time
+from tqdm import tqdm
 import torch
 import pandas as pd
 import numpy as np
@@ -10,12 +13,36 @@ import os
 import gc
 import json
 from pathlib import Path
-from typing import Optional, Dict, Literal, List
+from typing import Optional, Dict, Any
+import time
 from tqdm import tqdm
-from pprint import pprint
-import requests
+from typing import Literal, Optional, Tuple, List
 
-load_dotenv()
+
+
+def load_model_tokenizer(
+    model_name = "Qwen/Qwen2.5-14B-Instruct",
+):
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    if tokenizer.pad_token is None or not tokenizer.pad_token:
+        tokenizer.pad_token = tokenizer.eos_token
+    quantization_config = BitsAndBytesConfig(
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
+        load_in_4bit=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        quantization_config=quantization_config,
+        device_map="auto",
+        trust_remote_code=True
+    )
+    print(f"✅ Модель {model_name} успешно загружена!")
+    return model, tokenizer
+
+model_14b, tokenizer_14b = load_model_tokenizer("Qwen/Qwen2.5-14B-Instruct")
+
 
 PROMPTS = {
     "physics": """
@@ -203,7 +230,7 @@ PROMPTS = {
 
 
 FEW_SHOT_PROMPTS = {
-    "history": """Вот примеры формата ответов:
+    "history": """Ты эксперт по истории. Вот примеры формата ответов:
 
 Пример 1:
 Вопрос: В каком году произошла Куликовская битва?
@@ -223,7 +250,7 @@ FEW_SHOT_PROMPTS = {
 3. Николай I
 Ответ: 1""",
 
-    "math": """Вот примеры формата ответов:
+    "math": """Ты эксперт по математике. Вот примеры формата ответов:
 
 Пример 1:
 Вопрос: Чему равно значение выражения 2x + 3y при x=2, y=4?
@@ -243,7 +270,7 @@ FEW_SHOT_PROMPTS = {
 3. 0
 Ответ: 1""",
 
-    "physics": """Вот примеры формата ответов:
+    "physics": """Ты эксперт по физике. Вот примеры формата ответов:
 
 Пример 1:
 Вопрос: С какой силой притягивается тело массой 1 кг к Земле?
@@ -263,7 +290,7 @@ FEW_SHOT_PROMPTS = {
 3. Закон Архимеда
 Ответ: 2""",
 
-    "psychology": """Вот примеры формата ответов:
+    "psychology": """Ты эксперт по психологии. Вот примеры формата ответов:
 
 Пример 1:
 Вопрос: Кто основал психоанализ?
@@ -283,7 +310,7 @@ FEW_SHOT_PROMPTS = {
 3. Тревожное расстройство
 Ответ: 0""",
 
-    "law": """Вот примеры формата ответов:
+    "law": """Ты эксперт по праву. Вот примеры формата ответов:
 
 Пример 1:
 Вопрос: Какой кодекс регулирует гражданские отношения в России?
@@ -303,7 +330,7 @@ FEW_SHOT_PROMPTS = {
 3. Закон обратной силы не имеет
 Ответ: 1""",
 
-    "business": """Вот примеры формата ответов:
+    "business": """Ты эксперт по бизнесу. Вот примеры формата ответов:
 
 Пример 1:
 Вопрос: Что такое SWOT-анализ?
@@ -323,7 +350,7 @@ FEW_SHOT_PROMPTS = {
 3. Revenue Over Income - доход поверх дохода
 Ответ: 0""",
 
-    "biology": """Вот примеры формата ответов:
+    "biology": """Ты эксперт по биологии. Вот примеры формата ответов:
 
 Пример 1:
 Вопрос: Какой процесс называют фотосинтезом?
@@ -343,7 +370,7 @@ FEW_SHOT_PROMPTS = {
 3. Дарвин
 Ответ: 2""",
 
-    "engineering": """Вот примеры формата ответов:
+    "engineering": """Ты эксперт по инженерии. Вот примеры формата ответов:
 
 Пример 1:
 Вопрос: Что измеряется в Омах?
@@ -363,7 +390,7 @@ FEW_SHOT_PROMPTS = {
 3. Закон Паскаля
 Ответ: 0""",
 
-    "economics": """Вот примеры формата ответов:
+    "economics": """Ты эксперт по экономике. Вот примеры формата ответов:
 
 Пример 1:
 Вопрос: Что такое инфляция?
@@ -383,7 +410,7 @@ FEW_SHOT_PROMPTS = {
 3. Доходы населения
 Ответ: 1""",
 
-    "chemistry": """Вот примеры формата ответов:
+    "chemistry": """Ты эксперт по химии. Вот примеры формата ответов:
 
 Пример 1:
 Вопрос: Какая формула воды?
@@ -403,7 +430,7 @@ FEW_SHOT_PROMPTS = {
 3. Показатель давления
 Ответ: 0""",
 
-    "philosophy": """Вот примеры формата ответов:
+    "philosophy": """Ты эксперт по философии. Вот примеры формата ответов:
 
 Пример 1:
 Вопрос: Кто автор "Государства"?
@@ -423,7 +450,7 @@ FEW_SHOT_PROMPTS = {
 3. "Всё течет, всё изменяется"
 Ответ: 0""",
 
-    "health": """Вот примеры формата ответов:
+    "health": """Ты эксперт по медицине. Вот примеры формата ответов:
 
 Пример 1:
 Вопрос: Что измеряет тонометр?
@@ -443,7 +470,7 @@ FEW_SHOT_PROMPTS = {
 3. Витамин B12
 Ответ: 2""",
 
-    "computer science": """Вот примеры формата ответов:
+    "computer science": """Ты эксперт по информатике. Вот примеры формата ответов:
 
 Пример 1:
 Вопрос: Что такое алгоритм?
@@ -463,7 +490,7 @@ FEW_SHOT_PROMPTS = {
 3. JavaScript
 Ответ: 1""",
 
-    "other": """Вот примеры формата ответов:
+    "other": """Ты эксперт в различных областях знаний. Отвечай точно и кратко.
 
 Пример 1:
 Вопрос: Какая самая длинная река в мире?
@@ -485,9 +512,6 @@ FEW_SHOT_PROMPTS = {
 }
 
 
-import time
-from pathlib import Path
-from typing import Literal
 class LLM:
     def __init__(
         self,
@@ -495,7 +519,7 @@ class LLM:
         device="cuda",
         _prompts=PROMPTS,
         _few_shot_prompts=FEW_SHOT_PROMPTS,
-        model=None,      
+        model=None,
         tokenizer=None,
         quantization_config=None,
         debug=False,
@@ -544,7 +568,7 @@ class LLM:
                 trust_remote_code=True
             )
             print(f"✅ Модель {model_name} успешно загружена!")
-            
+
         except Exception as e:
             print(f"❌ Ошибка загрузки: {e}")
             print("Пробуем загрузить без квантования...")
@@ -555,7 +579,7 @@ class LLM:
                 )
                 if self.tokenizer.pad_token is None:
                     self.tokenizer.pad_token = self.tokenizer.eos_token
-                
+
                 self.model = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     device_map="auto",
@@ -573,10 +597,10 @@ class LLM:
         return self.generate_answer_selfcheck if use_selfcheck else self.generate_answer
 
     def generate_answer(
-        self, 
-        question:str, 
-        encoded_options, 
-        category:str, 
+        self,
+        question:str,
+        encoded_options,
+        category:str,
         dramatic:bool = True,
         tokens:int = 1000,
         temperature:float = 0.1,
@@ -587,16 +611,16 @@ class LLM:
         llm_few_shot_generation=None,
         force_diversity: bool = False
     )->int:
-        
+
         if use_llm_parsing is None:
             use_llm_parsing = self.USE_LLM_PARSING
         if use_selfcheck is None:
             use_selfcheck = self.USE_SELFCHECK
-        if llm_cot_generation is None:  
+        if llm_cot_generation is None:
             llm_cot_generation = self.LLM_COT_GENERATION
-        if llm_few_shot_generation is None:  
+        if llm_few_shot_generation is None:
             llm_few_shot_generation = self.LLM_FEW_SHOT_GENERATION
-        
+
         if use_selfcheck:
             return self.generate_answer_selfcheck(
                 question=question,
@@ -609,7 +633,7 @@ class LLM:
                 llm_cot_generation=llm_cot_generation,
                 llm_few_shot_generation=llm_few_shot_generation
             )
-        
+
         self._log("generate_answer", "начало", {
             "category": category,
             "question_len": len(question),
@@ -621,49 +645,49 @@ class LLM:
             "llm_few_shot_generation": llm_few_shot_generation,
             "force_diversity": force_diversity
         }, "DEBUG")
-        
+
         options = self._options_parser(encoded_options)
         self._log("generate_answer", "распарсенные опции", {
             "count": len(options),
             "first_3": options[:3] if len(options) > 3 else options
         }, "DEBUG")
-        
+
         if len(options) <= 1 and options[0] == "Варианты не предоставлены":
             self._log("generate_answer", "ОШИБКА: нет вариантов для вопроса", {
                 "question": question[:200]
             }, "DEBUG")
             return 0
-        
+
         result = self.generate_prompt(
-            question=question, 
-            encoded_options=options, 
+            question=question,
+            encoded_options=options,
             topic=category,
             drammatic=dramatic,
             few_shot=few_shot,
             llm_cot_generation=llm_cot_generation,
             llm_few_shot_generation=llm_few_shot_generation
         )
-        
+
         if result is None:
             self._log("generate_answer", "промпт не сгенерирован", None, "DEBUG")
             return 0
         system_prompt, user_prompt = result
-        
+
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
-        
+
         text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
-        
+
         generation_kwargs = {
             "input_ids": inputs.input_ids,
             "attention_mask": inputs.attention_mask,
             "max_new_tokens": tokens,
             "pad_token_id": self.tokenizer.pad_token_id,
         }
-        
+
         if force_diversity:
             generation_kwargs["temperature"] = temperature
             generation_kwargs["do_sample"] = True
@@ -675,13 +699,13 @@ class LLM:
             if category in ['history', 'philosophy', 'law', 'psychology', 'other']:
                 generation_kwargs["top_p"] = 0.9
             elif category in ['math', 'physics', 'engineering', 'computer science', 'chemistry']:
-                if temperature < 0.3: 
+                if temperature < 0.3:
                     generation_kwargs["do_sample"] = False
         else:
-            
-            generation_kwargs["temperature"] = 0.1  
+
+            generation_kwargs["temperature"] = 0.1
             generation_kwargs["do_sample"] = False
-        
+
         self._log("generate_answer", "параметры генерации", {
             "temperature": generation_kwargs.get("temperature", 0),
             "do_sample": generation_kwargs.get("do_sample", False),
@@ -689,25 +713,25 @@ class LLM:
             "category": category,
             "force_diversity": force_diversity
         }, "DEBUG")
-        
+
         with torch.no_grad():
             generated_ids = self.model.generate(**generation_kwargs)
-        
+
         response = self.tokenizer.decode(
-            generated_ids[0][inputs.input_ids.shape[1]:], 
+            generated_ids[0][inputs.input_ids.shape[1]:],
             skip_special_tokens=True
         )
-        
+
         parsed = self.parse_answer_index(response, use_llm_parsing=use_llm_parsing)
-        
+
         self._log_response(
             "MAIN_MODEL_RESPONSE",
             response,
             parsed,
             None,
             {
-                "category": category, 
-                "question": question[:100], 
+                "category": category,
+                "question": question[:100],
                 "use_llm_parsing": use_llm_parsing,
                 "use_selfcheck": use_selfcheck,
                 "llm_cot_generation": llm_cot_generation,
@@ -717,7 +741,7 @@ class LLM:
                 "response_length": len(response)
             }
         )
-        
+
         self._log("generate_answer", "завершено", {
             "parsed": parsed,
             "llm_cot_generation": llm_cot_generation,
@@ -727,14 +751,14 @@ class LLM:
                 "do_sample": generation_kwargs.get("do_sample", False)
             }
         }, "DEBUG")
-        
+
         return parsed
 
     def generate_answer_selfcheck(
-        self, 
-        question:str, 
-        encoded_options, 
-        category:str, 
+        self,
+        question:str,
+        encoded_options,
+        category:str,
         dramatic:bool = True,
         tokens:int = 1000,
         temperature:float = 0.1,
@@ -743,7 +767,7 @@ class LLM:
         llm_cot_generation=None,
         llm_few_shot_generation=None
     )->int:
-        
+
         if use_llm_parsing is None:
             use_llm_parsing = self.USE_LLM_PARSING
         if use_selfcheck is None:
@@ -752,7 +776,7 @@ class LLM:
             llm_cot_generation = self.LLM_COT_GENERATION
         if llm_few_shot_generation is None:
             llm_few_shot_generation = self.LLM_FEW_SHOT_GENERATION
-        
+
         self._log("generate_answer_selfcheck", "начало", {
             "category": category,
             "use_llm_parsing": use_llm_parsing,
@@ -760,7 +784,7 @@ class LLM:
             "llm_cot_generation": llm_cot_generation,
             "llm_few_shot_generation": llm_few_shot_generation
         }, "DEBUG")
-        
+
         main_response = self.generate_answer(
             question=question,
             encoded_options=encoded_options,
@@ -773,7 +797,7 @@ class LLM:
             llm_cot_generation=llm_cot_generation,
             llm_few_shot_generation=llm_few_shot_generation
         )
-        
+
         selfcheck = self._generate_selfcheck_prompt(
             question=question,
             topic=category,
@@ -784,21 +808,21 @@ class LLM:
             llm_cot_generation=llm_cot_generation,
             llm_few_shot_generation=llm_few_shot_generation
         )
-        
+
         if selfcheck is None:
             self._log("generate_answer_selfcheck", "selfcheck промпт не сгенерирован", None, "DEBUG")
             return main_response
-        
+
         system_prompt, user_prompt = selfcheck
-        
+
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
-        
+
         text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
-        
+
         with torch.no_grad():
             generated_ids = self.model.generate(
                 inputs.input_ids,
@@ -808,14 +832,14 @@ class LLM:
                 do_sample=False,
                 pad_token_id=self.tokenizer.pad_token_id,
             )
-        
+
         response = self.tokenizer.decode(
-            generated_ids[0][inputs.input_ids.shape[1]:], 
+            generated_ids[0][inputs.input_ids.shape[1]:],
             skip_special_tokens=True
         )
-        
+
         verified = self.parse_answer_index(response, use_llm_parsing=use_llm_parsing)
-        
+
         self._log_response(
             "SELFCHECK_RESPONSE",
             response,
@@ -832,7 +856,7 @@ class LLM:
                 "llm_few_shot_generation": llm_few_shot_generation
             }
         )
-        
+
         self._log("generate_answer_selfcheck", "завершено", {
             "main": main_response,
             "verified": verified,
@@ -840,7 +864,7 @@ class LLM:
             "llm_cot_generation": llm_cot_generation,
             "llm_few_shot_generation": llm_few_shot_generation
         }, "DEBUG")
-        
+
         return verified
 
     def ensemble_vote(
@@ -864,7 +888,7 @@ class LLM:
             llm_cot_generation = self.LLM_COT_GENERATION
         if llm_few_shot_generation is None:
             llm_few_shot_generation = self.LLM_FEW_SHOT_GENERATION
-        
+
         self._log("ensemble_vote", "начало", {
             "category": category,
             "n_votes": n_votes,
@@ -874,7 +898,7 @@ class LLM:
             "llm_cot_generation": llm_cot_generation,
             "llm_few_shot_generation": llm_few_shot_generation
         }, "DEBUG")
-        
+
         votes = []
         for i, temp in enumerate(temperatures[:n_votes]):
             self._log("ensemble_vote", f"голос {i+1}", {
@@ -882,7 +906,7 @@ class LLM:
                 "llm_cot_generation": llm_cot_generation,
                 "llm_few_shot_generation": llm_few_shot_generation
             }, "DEEP_DEBUG")
-            
+
             answer = self.generate_answer(
                 question=question,
                 encoded_options=encoded_options,
@@ -897,19 +921,19 @@ class LLM:
             )
             parsed = self.parse_answer_index(str(answer))
             votes.append(parsed)
-            
+
             self._log("ensemble_vote", f"голос {i+1} результат", {
-                "answer": answer, 
+                "answer": answer,
                 "parsed": parsed,
                 "temperature": temp,
                 "llm_cot_generation": llm_cot_generation,
                 "llm_few_shot_generation": llm_few_shot_generation
             }, "DEEP_DEBUG")
-        
+
         from collections import Counter
         vote_counts = Counter(votes)
         most_common = vote_counts.most_common(1)[0]
-        
+
         self._log("ensemble_vote", "результат", {
             "votes": votes,
             "distribution": dict(vote_counts),
@@ -917,7 +941,7 @@ class LLM:
             "llm_cot_generation": llm_cot_generation,
             "llm_few_shot_generation": llm_few_shot_generation
         }, "DEBUG")
-        
+
         return most_common[0], dict(vote_counts)
 
     def ask_with_verification(
@@ -928,8 +952,8 @@ class LLM:
         temperature=0.1,
         use_llm_parsing=None,
         use_selfcheck=None,
-        llm_cot_generation=None,  
-        llm_few_shot_generation=None  
+        llm_cot_generation=None,
+        llm_few_shot_generation=None
     ):
         if use_llm_parsing is None:
             use_llm_parsing = self.USE_LLM_PARSING
@@ -939,7 +963,7 @@ class LLM:
             llm_cot_generation = self.LLM_COT_GENERATION
         if llm_few_shot_generation is None:
             llm_few_shot_generation = self.LLM_FEW_SHOT_GENERATION
-        
+
         self._log("ask_with_verification", "начало", {
             "category": category,
             "temperature": temperature,
@@ -948,7 +972,7 @@ class LLM:
             "llm_cot_generation": llm_cot_generation,
             "llm_few_shot_generation": llm_few_shot_generation
         }, "DEBUG")
-        
+
         first_answer = self.generate_answer(
             question=question,
             encoded_options=encoded_options,
@@ -960,13 +984,13 @@ class LLM:
             llm_cot_generation=llm_cot_generation,
             llm_few_shot_generation=llm_few_shot_generation
         )
-        
+
         self._log("ask_with_verification", "первый ответ", {
             "first_answer": first_answer,
             "llm_cot_generation": llm_cot_generation,
             "llm_few_shot_generation": llm_few_shot_generation
         }, "DEEP_DEBUG")
-        
+
         res = self._generate_selfcheck_prompt(
             question=question,
             topic=category,
@@ -981,7 +1005,7 @@ class LLM:
         if res is None:
             self._log("ask_with_verification", "ошибка генерации selfcheck", None, "DEBUG")
             return 0, 0, 0
-        
+
         system_prompt, user_prompt = res
         check_response = self.direct_prompt(
             user_prompt=user_prompt,
@@ -989,11 +1013,11 @@ class LLM:
             tokens=300,
             temperature=0.1
         )
-        
+
         verified_answer = self.parse_answer_index(check_response, use_llm_parsing=use_llm_parsing)
-        
+
         weight = 1.5 if first_answer == verified_answer else 0.7
-        
+
         self._log("ask_with_verification", "результат", {
             "first": first_answer,
             "verified": verified_answer,
@@ -1002,7 +1026,7 @@ class LLM:
             "llm_cot_generation": llm_cot_generation,
             "llm_few_shot_generation": llm_few_shot_generation
         }, "DEBUG")
-        
+
         return verified_answer, weight, first_answer
 
     def confidence_ensemble_vote(
@@ -1014,8 +1038,8 @@ class LLM:
         temperatures=[0.1, 0.3, 0.5],
         use_llm_parsing=None,
         use_selfcheck=None,
-        llm_cot_generation=None,  
-        llm_few_shot_generation=None  
+        llm_cot_generation=None,
+        llm_few_shot_generation=None
     ):
         if use_llm_parsing is None:
             use_llm_parsing = self.USE_LLM_PARSING
@@ -1025,7 +1049,7 @@ class LLM:
             llm_cot_generation = self.LLM_COT_GENERATION
         if llm_few_shot_generation is None:
             llm_few_shot_generation = self.LLM_FEW_SHOT_GENERATION
-        
+
         self._log("confidence_ensemble_vote", "начало", {
             "category": category,
             "n_runs": n_runs,
@@ -1035,16 +1059,16 @@ class LLM:
             "llm_cot_generation": llm_cot_generation,
             "llm_few_shot_generation": llm_few_shot_generation
         }, "DEBUG")
-        
+
         results = []
-        
+
         for i, temp in enumerate(temperatures[:n_runs]):
             self._log("confidence_ensemble_vote", f"запуск {i+1}", {
                 "temperature": temp,
                 "llm_cot_generation": llm_cot_generation,
                 "llm_few_shot_generation": llm_few_shot_generation
             }, "DEEP_DEBUG")
-            
+
             answer, weight, first_answer = self.ask_with_verification(
                 question=question,
                 encoded_options=encoded_options,
@@ -1055,14 +1079,14 @@ class LLM:
                 llm_cot_generation=llm_cot_generation,
                 llm_few_shot_generation=llm_few_shot_generation
             )
-            
+
             results.append({
                 'answer': answer,
                 'weight': weight,
                 'first_answer': first_answer,
                 'agreement': first_answer == answer
             })
-            
+
             self._log("confidence_ensemble_vote", f"запуск {i+1} результат", {
                 "answer": answer,
                 "weight": weight,
@@ -1070,7 +1094,7 @@ class LLM:
                 "llm_cot_generation": llm_cot_generation,
                 "llm_few_shot_generation": llm_few_shot_generation
             }, "DEEP_DEBUG")
-        
+
         weighted_counts = {}
         for res in results:
             ans = res['answer']
@@ -1079,13 +1103,13 @@ class LLM:
                 weighted_counts[ans] += weight
             else:
                 weighted_counts[ans] = weight
-        
+
         best_answer = max(weighted_counts.items(), key=lambda x: x[1])
         total_weight = sum(res['weight'] for res in results)
         final_confidence = best_answer[1] / total_weight if total_weight > 0 else 0
-        
+
         agreement_rate = sum(1 for res in results if res['agreement']) / len(results) if len(results) > 0 else 0
-        
+
         self._log("confidence_ensemble_vote", "финальный результат", {
             "best_answer": best_answer[0],
             "confidence": final_confidence,
@@ -1094,8 +1118,9 @@ class LLM:
             "llm_cot_generation": llm_cot_generation,
             "llm_few_shot_generation": llm_few_shot_generation
         }, "DEBUG")
-        
+
         return best_answer[0], weighted_counts, final_confidence, agreement_rate
+
 
     def evaluate_dataframe(
         self,
@@ -1103,7 +1128,7 @@ class LLM:
         question_column="question",
         options_column="options",
         category_column="category",
-        answer_column="answer",
+        answer_column="true_answer",
         method:Literal[
             "ensemble_vote",
             "generate_answer",
@@ -1113,12 +1138,12 @@ class LLM:
         method_kwargs=None,
         use_llm_parsing=None,
         use_selfcheck=None,
-        llm_cot_generation=None,  
-        llm_few_shot_generation=None  
+        llm_cot_generation=None,
+        llm_few_shot_generation=None
     ):
         if method_kwargs is None:
             method_kwargs = {}
-        
+
         if use_llm_parsing is None:
             use_llm_parsing = self.USE_LLM_PARSING
         if use_selfcheck is None:
@@ -1127,53 +1152,55 @@ class LLM:
             llm_cot_generation = self.LLM_COT_GENERATION
         if llm_few_shot_generation is None:
             llm_few_shot_generation = self.LLM_FEW_SHOT_GENERATION
-        
+
         self._log("evaluate_dataframe", "начало", {
             "rows": len(df),
             "method": method,
             "columns": df.columns.tolist(),
-            "use_llm_parsing": use_llm_parsing,
-            "use_selfcheck": use_selfcheck,
-            "llm_cot_generation": llm_cot_generation,
-            "llm_few_shot_generation": llm_few_shot_generation
+            "has_answer_column": answer_column in df.columns,
+            "has_actual_answers": answer_column in df.columns and df[answer_column].notna().any()
         }, "DEBUG")
-        
+
         predictions = []
         processing_times = []
         category_results = {}
-        
+
+        has_actual_answers = False
+        if answer_column in df.columns:
+            has_actual_answers = df[answer_column].notna().any()
+            if has_actual_answers:
+                print(f"✅ В данных есть ответы для проверки ({df[answer_column].notna().sum()}/{len(df)})")
+            else:
+                print("ℹ️  Колонка 'true_answer' есть, но все ответы пустые (только предсказания)")
         pbar = tqdm(total=len(df), desc="Обработка вопросов")
-        
+
         for idx, row in df.iterrows():
             try:
                 start_time = time.time()
-                
+
                 question = str(row[question_column])
                 options = row[options_column]
                 category = str(row[category_column])
-                
+
                 expected_answer = None
                 if answer_column in df.columns and pd.notna(row[answer_column]):
                     expected_answer = self.parse_answer_index(str(row[answer_column]))
-                
+
                 self._log("evaluate_dataframe", f"строка {idx}", {
                     "category": category,
+                    "has_expected": expected_answer is not None,
                     "expected": expected_answer,
-                    "question": question[:50],
-                    "use_llm_parsing": use_llm_parsing,
-                    "use_selfcheck": use_selfcheck,
-                    "llm_cot_generation": llm_cot_generation,
-                    "llm_few_shot_generation": llm_few_shot_generation
+                    "question_preview": question[:50]
                 }, "DEEP_DEBUG")
-                
+
                 method_kwargs_with_defaults = {
                     "use_llm_parsing": use_llm_parsing,
                     "use_selfcheck": use_selfcheck,
-                    "llm_cot_generation": llm_cot_generation,  
-                    "llm_few_shot_generation": llm_few_shot_generation,  
+                    "llm_cot_generation": llm_cot_generation,
+                    "llm_few_shot_generation": llm_few_shot_generation,
                     **method_kwargs
                 }
-                
+
                 if method == "generate_answer":
                     predicted = self.generate_answer(
                         question=question,
@@ -1195,7 +1222,7 @@ class LLM:
                         category=category,
                         **method_kwargs_with_defaults
                     )
-                    
+
                     if self.DEEP_DEBUG:
                         print(f"ensemble_vote распределение: {vote_dist}")
                 elif method == "confidence_ensemble_vote":
@@ -1205,74 +1232,72 @@ class LLM:
                         category=category,
                         **method_kwargs_with_defaults
                     )
-                    
+
                     if self.DEEP_DEBUG:
                         print(f"confidence_ensemble_vote: confidence={confidence}, agreement={agreement}")
                 else:
                     raise ValueError(f"Неизвестный метод: {method}")
-                
+
                 predictions.append(predicted)
                 processing_time = time.time() - start_time
                 processing_times.append(processing_time)
-                
+
                 if category not in category_results:
                     category_results[category] = {
                         'total': 0, 'correct': 0, 'predictions': [], 'truths': []
                     }
-                
+
                 category_results[category]['total'] += 1
                 category_results[category]['predictions'].append(predicted)
-                
                 if expected_answer is not None:
                     category_results[category]['truths'].append(expected_answer)
                     predicted_parsed = self.parse_answer_index(str(predicted))
-                    
+
                     if predicted_parsed == expected_answer:
                         category_results[category]['correct'] += 1
-                        
+
                         if self.DEEP_DEBUG:
                             print(f"✓ Правильно: предсказано {predicted_parsed}, ожидалось {expected_answer}")
                     else:
                         if self.DEEP_DEBUG:
                             print(f"✗ Ошибка: предсказано {predicted_parsed}, ожидалось {expected_answer}")
-                
+
                 pbar.update(1)
-                
-                pbar.set_postfix({
+                postfix_info = {
                     'категория': category[:10],
-                    'предсказано': self.parse_answer_index(str(predicted)),
-                    'ответ': expected_answer if expected_answer is not None else '?'
-                })
-                
+                    'предсказано': self.parse_answer_index(str(predicted))
+                }
+                if expected_answer is not None:
+                    postfix_info['ответ'] = expected_answer
+                pbar.set_postfix(postfix_info)
+
             except Exception as e:
-                print(f"\nОшибка в строке {idx}: {e}")
-                
+                print(f"\n❌ Ошибка в строке {idx}: {e}")
+
                 self._log("evaluate_dataframe", f"ошибка в строке {idx}", {
                     "error": str(e),
                     "llm_cot_generation": llm_cot_generation,
                     "llm_few_shot_generation": llm_few_shot_generation
                 }, "DEBUG")
-                
+
                 predictions.append(0)
                 processing_times.append(0)
                 pbar.update(1)
-        
+
         pbar.close()
-        
+
         self._log("evaluate_dataframe", "завершено", {
             "total_rows": len(df),
             "predictions_made": len(predictions),
-            "use_llm_parsing": use_llm_parsing,
-            "use_selfcheck": use_selfcheck,
-            "llm_cot_generation": llm_cot_generation,
-            "llm_few_shot_generation": llm_few_shot_generation
+            "has_actual_answers": has_actual_answers,
+            "method": method
         }, "DEBUG")
-        
+
         results_df = df.copy()
         results_df['predicted'] = predictions
         results_df['processing_time'] = processing_times
         
-        if answer_column in df.columns:
+        if has_actual_answers:
             try:
                 results_df['predicted_parsed'] = results_df['predicted'].apply(
                     lambda x: self.parse_answer_index(str(x)) if pd.notna(x) else 0
@@ -1281,43 +1306,38 @@ class LLM:
                     lambda x: self.parse_answer_index(str(x)) if pd.notna(x) else 0
                 )
                 results_df['is_correct'] = results_df['predicted_parsed'] == results_df['answer_parsed']
-                
+
                 if self.DEBUG:
                     correct = results_df['is_correct'].sum()
                     total = len(results_df)
                     accuracy = correct / total if total > 0 else 0
-                    print(f"📊 Итог: {correct}/{total} правильных ({accuracy:.2%})")
-                    print(f"⚙️ Настройки: use_llm_parsing={use_llm_parsing}, use_selfcheck={use_selfcheck}")
-                    print(f"⚙️ CoT генерация: {'ВКЛ' if llm_cot_generation else 'ВЫКЛ'}")
-                    print(f"⚙️ Few-shot генерация: {'ВКЛ' if llm_few_shot_generation else 'ВЫКЛ'}")
-                    
+                    print(f"📊 Итог точности: {correct}/{total} правильных ({accuracy:.2%})")
+
             except Exception as e:
-                print(f"Ошибка при создании метрик: {e}")
+                print(f"❌ Ошибка при создании метрик: {e}")
                 results_df['is_correct'] = False
-        
+        else:
+            print("ℹ️  Ответы для проверки отсутствуют, метрики точности не рассчитываются")
+
         metrics = self._calculate_metrics(
             results_df,
-            answer_column,
+            answer_column if has_actual_answers else None,
             category_results,
             processing_times,
             method
         )
-        
+
         metrics['use_llm_parsing'] = use_llm_parsing
         metrics['use_selfcheck'] = use_selfcheck
-        metrics['llm_cot_generation'] = llm_cot_generation  
-        metrics['llm_few_shot_generation'] = llm_few_shot_generation  
-        
-        if self.DEBUG:
+        metrics['llm_cot_generation'] = llm_cot_generation
+        metrics['llm_few_shot_generation'] = llm_few_shot_generation
+        metrics['has_actual_answers'] = has_actual_answers
+
+        if self.DEBUG and has_actual_answers:
             accuracy = metrics.get('accuracy', 0)
-            print(f"📈 Точность: {accuracy:.2%}")
-            print(f"⚙️ Параметры: LLM парсинг={use_llm_parsing}, Self-check={use_selfcheck}")
-            print(f"⚙️ CoT генерация: {'ВКЛ' if llm_cot_generation else 'ВЫКЛ'}")
-            print(f"⚙️ Few-shot генерация: {'ВКЛ' if llm_few_shot_generation else 'ВЫКЛ'}")
-        
+            print(f"📈 Финальная точность: {accuracy:.2%}")
+
         return results_df, metrics
-    
-    
 
     def generate_prompt(
         self,
@@ -1327,37 +1347,37 @@ class LLM:
         drammatic:bool = True,
         drammatic_prompt = "На тебя возложена огромная надежда и ответственность за мою жизнь и репутацию, не подведи нас",
         few_shot = True,
-        llm_cot_generation=True,  
-        llm_few_shot_generation=True  
+        llm_cot_generation=True,
+        llm_few_shot_generation=True
     ):
         self._log("generate_prompt", "начало", {
-            "topic": topic, 
+            "topic": topic,
             "few_shot": few_shot,
             "encoded_options_raw": str(encoded_options)[:200],
             "llm_cot_generation": llm_cot_generation,
             "llm_few_shot_generation": llm_few_shot_generation
         }, "DEEP_DEBUG")
-        
+
         options = self._options_parser(options=encoded_options)
-        
+
         self._log("generate_prompt", "распарсенные опции", {
             "count": len(options),
             "options_preview": options[:3] if options else []
         }, "DEBUG")
-        
+
         if not options or (len(options) == 1 and options[0] == "Варианты не предоставлены"):
             self._log("generate_prompt", "ВНИМАНИЕ: нет вариантов ответа!", {
                 "raw_input": str(encoded_options)[:500]
             }, "DEBUG")
             return None
-        
+
         base_prompt = self.prompts.get(topic,
             "Ты - опытный специалист широкого профиля. Ответь на предоставленный тебе вопрос, выбрав индекс правильного ответа (начиная с нуля)"
             "Дай в ответе только индекс, не давай дополнительных комментариев"
             "Для решения задачи обдумай каждый вариант ответа, подумай, почему он может быть правильным или неправильным"
         )
-        
-        
+
+
         cot_section = ""
         if llm_cot_generation:
             cot_instruction = self.generate_cot_instruction(
@@ -1366,10 +1386,10 @@ class LLM:
                 encoded_options=encoded_options,
                 max_tokens=400
             )
-            
+
             if cot_instruction:
                 cot_section = f"""
-                
+
 ИНСТРУКЦИЯ ДЛЯ РЕШЕНИЯ (CHAIN OF THOUGHT):
 Реши задачу, следуя этим шагам:
 {cot_instruction}
@@ -1379,7 +1399,7 @@ class LLM:
             else:
                 self._log("generate_prompt", "CoT не сгенерирована, используем fallback", None, "DEBUG")
                 cot_section = """
-                
+
 ИНСТРУКЦИЯ ДЛЯ РЕШЕНИЯ:
 1. Внимательно прочитай вопрос
 2. Проанализируй каждый вариант ответа
@@ -1387,8 +1407,8 @@ class LLM:
 4. Выбери правильный вариант
 5. Напиши только индекс правильного ответа
 """
-        
-        
+
+
         few_shot_text = ""
         if few_shot:
             if llm_few_shot_generation:
@@ -1419,7 +1439,7 @@ class LLM:
 3. Тургенев
 Ответ: 1""" if few_shot else ""
                 )
-        
+
         system_prompt = f"""
 {base_prompt}
 
@@ -1433,9 +1453,9 @@ class LLM:
 
 ФОРМАТ ОТВЕТА: [индекс] (например: 2)
 """
-        
+
         options_text = "\n".join([f"{ind}. {opt}" for ind, opt in enumerate(options)])
-        
+
         user_prompt = f"""
 Вопрос: {question}
 
@@ -1445,7 +1465,7 @@ class LLM:
 {drammatic_prompt if drammatic else ""}
 
 Ответ (только индекс):"""
-        
+
         self._log("generate_prompt", "сгенерирован", {
             "options_count": len(options),
             "question_preview": question[:100],
@@ -1455,12 +1475,12 @@ class LLM:
             "has_cot": bool(cot_section),
             "has_few_shot": bool(few_shot_text)
         }, "DEBUG")
-        
+
         if self.DEEP_DEBUG:
             print("\n[DEEP_DEBUG] generate_prompt - финальный промпт:")
             print(f"System preview: {system_prompt[:300]}...")
             print(f"\nUser preview: {user_prompt[:300]}...")
-        
+
         return system_prompt, user_prompt
 
     def _generate_selfcheck_prompt(
@@ -1473,29 +1493,29 @@ class LLM:
         drammatic_prompt = "На тебя возложена огромная надежда и ответственность за мою жизнь и репутацию, не подведи нас",
         few_shot = True,
         use_llm_parsing=True,
-        llm_cot_generation=True,  
-        llm_few_shot_generation=True  
+        llm_cot_generation=True,
+        llm_few_shot_generation=True
     ):
         self._log("_generate_selfcheck_prompt", "начало", {
             "topic": topic,
             "llm_cot_generation": llm_cot_generation,
             "llm_few_shot_generation": llm_few_shot_generation
         }, "DEEP_DEBUG")
-        
+
         options = self._options_parser(options=encoded_options)
         if not options:
             self._log("_generate_selfcheck_prompt", "ошибка парсинга опций", None, "DEBUG")
             return None
-        
+
         predicted_idx = self.parse_answer_index(
             str(predicted_answer),
             use_llm_parsing=use_llm_parsing
         )
-        
+
         option_text = "неизвестный вариант"
         if 0 <= predicted_idx < len(options):
             option_text = options[predicted_idx]
-        
+
         self._log("_generate_selfcheck_prompt", "индекс предсказания", {
             "raw": str(predicted_answer)[:50],
             "parsed": predicted_idx,
@@ -1503,17 +1523,17 @@ class LLM:
             "llm_cot_generation": llm_cot_generation,
             "llm_few_shot_generation": llm_few_shot_generation
         }, "DEEP_DEBUG")
-        
+
         base_prompt = """Ты - эксперт по проверке ответов. Твоя задача - проверить ответ другого эксперта.
 Если он правильный - верни тот же индекс. Если неправильный - найди и верни правильный индекс."""
-        
+
         if llm_cot_generation:
             base_prompt += "\n\nИСПОЛЬЗУЙ ЦЕПОЧКУ РАССУЖДЕНИЙ:\n"
             base_prompt += "1. Проанализируй оригинальный вопрос\n"
             base_prompt += "2. Проверь ответ коллеги на соответствие вопросу\n"
             base_prompt += "3. Если сомневаешься, найди правильный ответ самостоятельно\n"
             base_prompt += "4. Дай окончательный ответ в формате 'ОТВЕТ: [индекс]'"
-        
+
         if few_shot:
             base_prompt += """
 Пример 1:
@@ -1535,11 +1555,11 @@ class LLM:
 3. 6
 Ответ коллеги: 0
 Твой ответ: 1"""
-        
+
         system_prompt = f"{base_prompt}"
-        
+
         options_text = "\n".join([f"{i}. {opt}" for i, opt in enumerate(options)])
-        
+
         user_prompt = f"""
 Вопрос: {question}
 Варианты ответов:
@@ -1550,13 +1570,13 @@ class LLM:
 ОБРАТИ ВНИМАНИЕ - В ОТВЕТЕ ТЕБЕ НУЖНО ДАТЬ ОДИН ИНДЕКС
 НЕ ПИШИ ДОПОЛНИТЕЛЬНЫХ РАССУЖДЕНИЙ
 """
-        
+
         self._log("_generate_selfcheck_prompt", "сгенерирован", {
             "options_count": len(options),
             "llm_cot_generation": llm_cot_generation,
             "llm_few_shot_generation": llm_few_shot_generation
         }, "DEBUG")
-        
+
         return system_prompt, user_prompt
 
     def _log(self, method, message, data=None, level="DEBUG"):
@@ -1564,7 +1584,7 @@ class LLM:
             return
         if level == "DEEP_DEBUG" and not self.DEEP_DEBUG:
             return
-        
+
         log_entry = {
             "timestamp": time.time(),
             "method": method,
@@ -1573,16 +1593,16 @@ class LLM:
             "level": level
         }
         self.debug_logs.append(log_entry)
-        
+
         if self.DEBUG or self.DEEP_DEBUG:
             print(f"[{level}] {method}: {message}")
             if data and self.DEEP_DEBUG:
                 print(f"    Данные: {data}")
-    
+
     def _log_response(self, stage, raw_response, parsed, expected=None, metadata=None):
         if not self.DEEP_DEBUG:
             return
-        
+
         print(f"\n{'='*80}")
         print(f"[DEEP_DEBUG] {stage}")
         print(f"Сырой ответ ({len(raw_response)} chars):")
@@ -1594,7 +1614,7 @@ class LLM:
         if metadata:
             print(f"Метаданные: {metadata}")
         print(f"{'='*80}\n")
-        
+
         log_entry = {
             "timestamp": time.time(),
             "stage": stage,
@@ -1610,23 +1630,23 @@ class LLM:
             "raw_input": str(options)[:200],
             "type": type(options)
         }, "DEEP_DEBUG")
-        
-        
+
+
         if isinstance(options, list):
             self._log("_options_parser", "уже список", {"len": len(options), "first_3": options[:3]}, "DEEP_DEBUG")
             return options
-        
+
         original_input = str(options)
-        
-        
+
+
         if isinstance(options, str):
-            
+
             text = original_input.strip()
-            
-            
+
+
             if text.startswith('[') and text.endswith(']'):
                 try:
-                    
+
                     json_text = text.replace("'", '"')
                     parsed = json.loads(json_text)
                     if isinstance(parsed, list):
@@ -1634,36 +1654,36 @@ class LLM:
                         return parsed
                 except json.JSONDecodeError as e:
                     self._log("_options_parser", "JSON ошибка", {"error": str(e)}, "DEBUG")
-            
-            
+
+
             if text.startswith('[') and text.endswith(']'):
-                
+
                 content = text[1:-1].strip()
                 self._log("_options_parser", "формат с пробелами", {"content_preview": content[:100]}, "DEEP_DEBUG")
-                
+
                 items = []
                 current_item = ""
                 in_quotes = False
                 quote_char = None
-                
+
                 i = 0
                 while i < len(content):
                     char = content[i]
-                    
+
                     if char in ['"', "'"]:
                         if not in_quotes:
-                            
+
                             in_quotes = True
                             quote_char = char
                             current_item += char
                         elif char == quote_char:
-                            
+
                             in_quotes = False
                             current_item += char
                             items.append(current_item)
                             current_item = ""
-                            
-                            
+
+
                             i += 1
                             while i < len(content) and content[i] in [' ', '\n', '\t']:
                                 i += 1
@@ -1671,20 +1691,20 @@ class LLM:
                         else:
                             current_item += char
                     elif char == ' ' and not in_quotes:
-                        
+
                         if current_item:
                             items.append(current_item)
                             current_item = ""
                     else:
                         current_item += char
-                    
+
                     i += 1
-                
-                
+
+
                 if current_item:
                     items.append(current_item)
-                
-                
+
+
                 cleaned_items = []
                 for item in items:
                     item = item.strip()
@@ -1692,26 +1712,26 @@ class LLM:
                         if (item.startswith('"') and item.endswith('"')) or \
                         (item.startswith("'") and item.endswith("'")):
                             item = item[1:-1]
-                        
+
                         item = item.replace('\\"', '"').replace("\\'", "'").replace('\\n', '\n')
                         cleaned_items.append(item)
-                
+
                 if cleaned_items:
                     self._log("_options_parser", "специальный формат распарсен", {
                         "count": len(cleaned_items),
                         "first_3": cleaned_items[:3]
                     }, "DEBUG")
                     return cleaned_items
-        
-        
+
+
         if isinstance(options, str) and ',' in options:
             try:
-                
+
                 parts = []
                 current = ""
                 in_quotes = False
                 quote_char = None
-                
+
                 for char in options:
                     if char in ['"', "'"]:
                         if not in_quotes:
@@ -1725,11 +1745,11 @@ class LLM:
                         current = ""
                     else:
                         current += char
-                
+
                 if current:
                     parts.append(current.strip())
-                
-                
+
+
                 cleaned_parts = []
                 for part in parts:
                     part = part.strip()
@@ -1738,7 +1758,7 @@ class LLM:
                         (part.startswith("'") and part.endswith("'")):
                             part = part[1:-1]
                         cleaned_parts.append(part)
-                
+
                 if cleaned_parts:
                     self._log("_options_parser", "разделили по запятым", {
                         "count": len(cleaned_parts),
@@ -1747,20 +1767,20 @@ class LLM:
                     return cleaned_parts
             except Exception as e:
                 self._log("_options_parser", "ошибка при разделении по запятым", {"error": str(e)}, "DEBUG")
-        
-        
+
+
         if isinstance(options, str) and len(options) > 10:
             self._log("_options_parser", "пробуем LLM парсинг", None, "DEBUG")
             llm_parsed = self._llm_parse_options(options)
             if llm_parsed:
                 return llm_parsed
-        
-        
+
+
         self._log("_options_parser", "не удалось распарсить", {
             "original_length": len(original_input),
             "original_preview": original_input[:200]
         }, "DEBUG")
-        
+
         return ["Варианты не предоставлены"]
 
     def _llm_parse_options(self, options_text):
@@ -1793,15 +1813,15 @@ class LLM:
     Текст: {options_text}
 
     JSON список:"""
-            
+
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
-            
+
             text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
-            
+
             with torch.no_grad():
                 generated_ids = self.model.generate(
                     inputs.input_ids,
@@ -1811,22 +1831,22 @@ class LLM:
                     do_sample=False,
                     pad_token_id=self.tokenizer.pad_token_id
                 )
-            
+
             llm_response = self.tokenizer.decode(
-                generated_ids[0][inputs.input_ids.shape[1]:], 
+                generated_ids[0][inputs.input_ids.shape[1]:],
                 skip_special_tokens=True
             )
-            
+
             self._log("_llm_parse_options", "LLM ответ", {"response": llm_response[:200]}, "DEBUG")
-            
-            
+
+
             try:
                 parsed = json.loads(llm_response)
                 if isinstance(parsed, list):
                     self._log("_llm_parse_options", "успешно распарсено", {"count": len(parsed)}, "DEBUG")
                     return parsed
             except json.JSONDecodeError:
-                
+
                 import re
                 json_match = re.search(r'\[.*\]', llm_response, re.DOTALL)
                 if json_match:
@@ -1837,9 +1857,9 @@ class LLM:
                             return parsed
                     except:
                         pass
-            
+
             return []
-            
+
         except Exception as e:
             self._log("_llm_parse_options", "ошибка", {"error": str(e)}, "DEBUG")
             return []
@@ -1853,7 +1873,7 @@ class LLM:
     ) -> str:
         """
         Генерирует только CoT инструкцию для конкретного вопроса.
-        
+
         Returns:
             str: Сгенерированная CoT инструкция или пустая строка при ошибке
         """
@@ -1862,15 +1882,15 @@ class LLM:
             "question_len": len(question),
             "max_tokens": max_tokens
         }, "DEBUG")
-        
+
         options = self._options_parser(encoded_options)
         if not options or (len(options) == 1 and options[0] == "Варианты не предоставлены"):
             self._log("generate_cot_instruction", "нет опций", None, "DEBUG")
             return ""
-        
+
         options_text = "\n".join([f"{i}. {opt}" for i, opt in enumerate(options)])
-        
-        system_prompt = """Ты эксперт по методике Chain of Thought (CoT). 
+
+        system_prompt = """Ты эксперт по методике Chain of Thought (CoT).
     Создай структурированную пошаговую инструкцию для решения ЗАДАЧИ.
 
     ТРЕБОВАНИЯ:
@@ -1893,20 +1913,20 @@ class LLM:
     ВАРИАНТЫ ОТВЕТОВ (всего {len(options)}):
     {options_text}
 
-    Инструкция должна помочь систематически решить эту задачу. 
+    Инструкция должна помочь систематически решить эту задачу.
     Индексы вариантов: от 0 до {len(options)-1}.
 
     CoT инструкция:"""
-        
+
         try:
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
-            
+
             text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
-            
+
             with torch.no_grad():
                 generated_ids = self.model.generate(
                     inputs.input_ids,
@@ -1916,24 +1936,24 @@ class LLM:
                     do_sample=False,
                     pad_token_id=self.tokenizer.pad_token_id,
                 )
-            
+
             cot_instruction = self.tokenizer.decode(
-                generated_ids[0][inputs.input_ids.shape[1]:], 
+                generated_ids[0][inputs.input_ids.shape[1]:],
                 skip_special_tokens=True
             ).strip()
-            
+
             self._log("generate_cot_instruction", "CoT сгенерирована", {
                 "length": len(cot_instruction),
                 "preview": cot_instruction[:200]
             }, "DEBUG")
-            
+
             if self.DEEP_DEBUG:
                 print(f"\n[DEEP_DEBUG] Сгенерированная CoT инструкция:")
                 print(f"{cot_instruction}")
                 print("-" * 80)
-            
+
             return cot_instruction
-            
+
         except Exception as e:
             self._log("generate_cot_instruction", "ошибка генерации", {"error": str(e)}, "DEBUG")
             return ""
@@ -1948,14 +1968,14 @@ class LLM:
     ) -> str:
         """
         Генерирует few-shot примеры, тематически смежные с заданным вопросом.
-        
+
         Args:
             question: Оригинальный вопрос (для определения тематики и сложности)
             topic: Категория вопроса
             encoded_options: Варианты ответов оригинального вопроса
             num_examples: Количество примеров для генерации
             max_tokens_per_example: Максимальное количество токенов на пример
-        
+
         Returns:
             str: Сгенерированные few-shot примеры в формате строки
         """
@@ -1967,7 +1987,7 @@ class LLM:
 
         options = self._options_parser(encoded_options)
         num_options = len(options) if options and options[0] != "Варианты не предоставлены" else 4
-        
+
         question_complexity = "средней сложности" if len(question) > 100 else "базовой сложности"
         options_complexity = f"{num_options} вариантов" if num_options > 4 else "стандартное количество вариантов"
 
@@ -2024,43 +2044,43 @@ class LLM:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
-            
+
             text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
-            
+
             with torch.no_grad():
                 generated_ids = self.model.generate(
                     inputs.input_ids,
                     attention_mask=inputs.attention_mask,
                     max_new_tokens=max_tokens_per_example * num_examples,
-                    temperature=0.4, 
+                    temperature=0.4,
                     do_sample=True,
                     top_p=0.9,
                     pad_token_id=self.tokenizer.pad_token_id,
                 )
-            
+
             few_shot_examples = self.tokenizer.decode(
-                generated_ids[0][inputs.input_ids.shape[1]:], 
+                generated_ids[0][inputs.input_ids.shape[1]:],
                 skip_special_tokens=True
             ).strip()
 
             formatted_examples = self._validate_and_format_few_shot(few_shot_examples, topic, num_options)
-            
+
             self._log("generate_contextual_few_shot", "примеры сгенерированы", {
                 "original_topic": topic,
                 "generated_length": len(formatted_examples),
                 "num_examples_found": formatted_examples.count("Пример"),
                 "preview": formatted_examples[:300]
             }, "DEBUG")
-            
+
             if self.DEEP_DEBUG:
                 print(f"\n[DEEP_DEBUG] Сгенерированные few-shot примеры для '{topic}':")
                 print("-" * 80)
                 print(formatted_examples)
                 print("-" * 80)
-            
+
             return formatted_examples
-            
+
         except Exception as e:
             self._log("generate_contextual_few_shot", "ошибка генерации", {"error": str(e)}, "DEBUG")
             return ""
@@ -2068,27 +2088,27 @@ class LLM:
     def _extract_topic_keywords(self, question: str, topic: str) -> str:
         """Извлекает ключевые слова из вопроса для определения узкой тематики"""
         keywords = []
-        
+
         if topic == 'math':
-            math_terms = ['гомоморфизм', 'ядро', 'инъективный', 'кольцо', 'идеал', 'уравнение', 
+            math_terms = ['гомоморфизм', 'ядро', 'инъективный', 'кольцо', 'идеал', 'уравнение',
                         'производная', 'интеграл', 'матрица', 'вектор', 'теорема', 'доказательство']
             keywords = [term for term in math_terms if term in question.lower()]
-        
+
         elif topic == 'physics':
             physics_terms = ['скорость', 'ускорение', 'сила', 'энергия', 'заряд', 'волна',
                             'температура', 'давление', 'оптика', 'механика', 'электричество']
             keywords = [term for term in physics_terms if term in question.lower()]
-        
+
         elif topic == 'history':
             history_terms = ['год', 'век', 'война', 'революция', 'договор', 'император',
                             'сражение', 'реформа', 'хронология', 'период', 'событие']
             keywords = [term for term in history_terms if term in question.lower()]
-        
+
         if not keywords:
             words = question.lower().split()
             stop_words = {'этот', 'вопрос', 'относится', 'следующей', 'информации', 'какой', 'что', 'как'}
             keywords = [w for w in words if len(w) > 4 and w not in stop_words][:5]
-        
+
         return ", ".join(keywords[:3]) if keywords else "общая тематика"
 
     def _validate_and_format_few_shot(self, examples_text: str, topic: str, expected_options: int) -> str:
@@ -2096,7 +2116,7 @@ class LLM:
         lines = examples_text.strip().split('\n')
         formatted = []
         current_example = []
-        
+
         for line in lines:
             line = line.strip()
             if not line:
@@ -2111,26 +2131,26 @@ class LLM:
                 current_example.append(line)
             elif current_example:
                 current_example.append(line)
-        
+
         if current_example:
             formatted_example = self._format_single_example(current_example, topic, expected_options)
             if formatted_example:
                 formatted.append(formatted_example)
-        
+
         if not formatted:
             fallback = self._create_fallback_examples(topic, expected_options)
             return fallback
-        
+
         return "\n\n".join(formatted)
 
     def _format_single_example(self, example_lines: list, topic: str, expected_options: int) -> str:
         """Форматирует один few-shot пример"""
         example_text = "\n".join(example_lines)
-        
+
         has_question = any('вопрос:' in line.lower() for line in example_lines)
         has_options = any('вариант' in line.lower() for line in example_lines)
         has_answer = any('ответ:' in line.lower() for line in example_lines)
-        
+
         if not (has_question and has_options and has_answer):
             return ""
 
@@ -2147,7 +2167,7 @@ class LLM:
             "topic": topic,
             "num_options": num_options
         }, "DEBUG")
-        
+
 
         fallbacks = self.few_shot_prompts
         if topic in fallbacks.keys():
@@ -2164,7 +2184,7 @@ class LLM:
 
     def llm_parse_answer(self, raw_response: str) -> int:
         self._log("llm_parse_answer", "начало", {"raw_len": len(raw_response)}, "DEEP_DEBUG")
-        
+
         system_prompt = """Ты - ассистент по извлечению чисел. Извлеки ЧИСЛО из текста.
 Пример 1:
 Текст: "Ответ: 2. Этот вариант правильный потому что..."
@@ -2188,22 +2208,22 @@ class LLM:
 3. Если указана буква (A=0, B=1, C=2, D=3)
 4. Если не можешь извлечь - возвращай 0
 5. Только число, без текста"""
-        
+
         user_prompt = f"""Извлеки число из текста:
 
 Текст: {raw_response}
 
 Извлеченное число:"""
-        
+
         try:
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ]
-            
+
             text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
-            
+
             with torch.no_grad():
                 generated_ids = self.model.generate(
                     inputs.input_ids,
@@ -2213,42 +2233,42 @@ class LLM:
                     do_sample=False,
                     pad_token_id=self.tokenizer.pad_token_id
                 )
-            
+
             llm_parsed = self.tokenizer.decode(
-                generated_ids[0][inputs.input_ids.shape[1]:], 
+                generated_ids[0][inputs.input_ids.shape[1]:],
                 skip_special_tokens=True
             )
-            
+
             self._log("llm_parse_answer", "LLM ответ", {"llm_parsed": llm_parsed}, "DEEP_DEBUG")
-            
+
             regex_parsed = self._regex_parse_answer(llm_parsed)
-            
+
             self._log("llm_parse_answer", "финальный результат", {
                 "raw_response_len": len(raw_response),
                 "llm_parsed": llm_parsed,
                 "regex_parsed": regex_parsed
             }, "DEBUG")
-            
+
             return regex_parsed
-            
+
         except Exception as e:
             self._log("llm_parse_answer", "ошибка", {"error": str(e)}, "DEBUG")
             return 0
-    
+
     def _regex_parse_answer(self, text: str) -> int:
         import re
-        
+
         text = str(text).strip()
-        
+
         if not text:
             return 0
-        
+
         try:
             num = int(text)
             return num
         except:
             pass
-        
+
         patterns = [
             r'^\s*(\d+)\s*$',
             r'ответ[:\s]*(\d+)',
@@ -2256,7 +2276,7 @@ class LLM:
             r'номер[:\s]*(\d+)',
             r'\b(\d+)\b',
         ]
-        
+
         for pattern in patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
@@ -2265,44 +2285,44 @@ class LLM:
                     return num
                 except:
                     continue
-        
+
         letter_match = re.search(r'\b([a-d])\b', text, re.IGNORECASE)
         if letter_match:
             letter = letter_match.group(1).upper()
             return ord(letter) - ord('A')
-        
+
         return 0
-    
+
     def parse_answer_index(self, answer_text: str, use_llm_parsing=True) -> int:
         self._log("parse_answer_index", "начало", {"raw": str(answer_text)[:100], "use_llm_parsing": use_llm_parsing}, "DEEP_DEBUG")
-        
+
         if not answer_text:
             self._log("parse_answer_index", "пустой ответ", None, "DEBUG")
             return 0
-        
+
         answer_text = str(answer_text).strip()
-        
+
         try:
             num = int(answer_text)
             self._log("parse_answer_index", "прямое число", {"num": num}, "DEBUG")
             return num
         except:
             pass
-        
+
         if use_llm_parsing and len(answer_text) > 10:
             llm_result = self.llm_parse_answer(answer_text)
             self._log("parse_answer_index", "LLM парсинг", {"llm_result": llm_result}, "DEBUG")
-            
+
             if llm_result != 0:
                 return llm_result
-        
+
         regex_result = self._regex_parse_answer(answer_text)
         self._log("parse_answer_index", "регулярки", {"regex_result": regex_result}, "DEBUG")
-        
+
         return regex_result
 
     def direct_prompt(
-        self, 
+        self,
         user_prompt:str,
         system_prompt:str,
         tokens:int = 1000,
@@ -2314,18 +2334,18 @@ class LLM:
             "system_len": len(system_prompt),
             "temperature": temperature
         }, "DEEP_DEBUG")
-        
+
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
-        
+
         text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        
+
         self._log("direct_prompt", "шаблон применен", {"input_length": len(text)}, "DEEP_DEBUG")
-        
+
         inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
-        
+
         with torch.no_grad():
             generated_ids = self.model.generate(
                 inputs.input_ids,
@@ -2335,18 +2355,18 @@ class LLM:
                 do_sample=False,
                 pad_token_id=self.tokenizer.pad_token_id
             )
-        
+
         response = self.tokenizer.decode(
-            generated_ids[0][inputs.input_ids.shape[1]:], 
+            generated_ids[0][inputs.input_ids.shape[1]:],
             skip_special_tokens=True
         )
-        
+
         self._log("direct_prompt", "получен ответ", {"response_length": len(response)}, "DEBUG")
-        
+
         if self.DEEP_DEBUG:
             print(f"[DEEP_DEBUG] direct_prompt response ({len(response)} chars):")
             print(f"{response[:500]}...")
-        
+
         return response
 
     def get_debug_logs(self):
@@ -2365,12 +2385,12 @@ class LLM:
         if not self.DEBUG and not self.DEEP_DEBUG:
             print("Отладка отключена")
             return
-        
+
         print(f"\n{'='*60}")
         print("СВОДКА ОТЛАДКИ LLM")
         print(f"{'='*60}")
         print(f"Всего логов: {len(self.debug_logs)}")
-        
+
         if self.debug_logs:
             methods = {}
             levels = {}
@@ -2379,15 +2399,15 @@ class LLM:
                 level = log.get("level", "unknown")
                 methods[method] = methods.get(method, 0) + 1
                 levels[level] = levels.get(level, 0) + 1
-            
+
             print("\nВызовы методов:")
             for method, count in sorted(methods.items()):
                 print(f"  {method}: {count}")
-            
+
             print("\nУровни логирования:")
             for level, count in sorted(levels.items()):
                 print(f"  {level}: {count}")
-            
+
             print(f"\nDEBUG: {self.DEBUG}")
             print(f"DEEP_DEBUG: {self.DEEP_DEBUG}")
 
@@ -2400,22 +2420,44 @@ class LLM:
         processing_times,
         method
     ):
+        prediction_column = 'answer' if 'answer' in results_df.columns else 'predicted'
+        
+        def convert_to_json_serializable(obj):
+            if isinstance(obj, (np.integer, int)):
+                return int(obj)
+            elif isinstance(obj, (np.floating, float)):
+                return float(obj)
+            elif isinstance(obj, (np.bool_, bool)):
+                return bool(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_to_json_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_json_serializable(item) for item in obj]
+            else:
+                return obj
+        
         metrics = {
             'method': method,
             'total_questions': len(results_df),
-            'avg_processing_time': np.mean(processing_times) if processing_times else 0,
+            'avg_processing_time': np.mean(processing_times).item() if processing_times else 0.0,
             'total_processing_time': sum(processing_times)
         }
-
-        if answer_column in results_df.columns and 'is_correct' in results_df.columns:
-            correct = results_df['is_correct'].sum()
-            accuracy = correct / len(results_df) if len(results_df) > 0 else 0
+        
+        has_real_answers = False
+        if answer_column is not None and answer_column in results_df.columns:
+            has_real_answers = results_df[answer_column].notna().any().item()
+        
+        if has_real_answers and 'is_correct' in results_df.columns:
+            correct = results_df['is_correct'].sum().item()
+            accuracy = (correct / len(results_df)).item() if len(results_df) > 0 else 0.0
 
             metrics.update({
-                'correct_answers': int(correct),
+                'correct_answers': correct,
                 'accuracy': accuracy,
                 'accuracy_percent': f"{accuracy * 100:.2f}%",
-                'error_rate': 1 - accuracy
+                'error_rate': (1 - accuracy).item()
             })
 
             category_metrics = {}
@@ -2423,7 +2465,7 @@ class LLM:
                 if results['truths']:
                     cat_total = len(results['truths'])
                     cat_correct = results['correct']
-                    cat_accuracy = cat_correct / cat_total if cat_total > 0 else 0
+                    cat_accuracy = (cat_correct / cat_total) if cat_total > 0 else 0.0
 
                     category_metrics[category] = {
                         'total': cat_total,
@@ -2431,42 +2473,74 @@ class LLM:
                         'accuracy': cat_accuracy,
                         'accuracy_percent': f"{cat_accuracy * 100:.2f}%"
                     }
+                else:
+                    category_metrics[category] = {
+                        'total': results['total'],
+                        'correct': 0,
+                        'accuracy': 0.0,
+                        'accuracy_percent': "0.00%",
+                        'note': 'no ground truth answers'
+                    }
 
             metrics['category_metrics'] = category_metrics
-
-            confusion = np.zeros((4, 4), dtype=int)
+            
+            max_classes = 10
+            confusion = np.zeros((max_classes, max_classes), dtype=int)
+            answer_count = 0
+            
             for idx, row in results_df.iterrows():
-                if pd.notna(row[answer_column]) and pd.notna(row['predicted']):
+                if pd.notna(row[answer_column]) and pd.notna(row[prediction_column]):
+                    answer_count += 1
                     try:
                         true_val = self.parse_answer_index(str(row[answer_column]))
                     except:
                         true_val = 0
                     try:
-                        pred_val = self.parse_answer_index(str(row['predicted']))
+                        pred_val = self.parse_answer_index(str(row[prediction_column]))
                     except:
                         pred_val = 0
-                    
-                    if 0 <= true_val < 4 and 0 <= pred_val < 4:
+
+                    if 0 <= true_val < max_classes and 0 <= pred_val < max_classes:
                         confusion[true_val][pred_val] += 1
+            
+            if answer_count > 0:
+                metrics['confusion_matrix'] = confusion.tolist()
 
-            metrics['confusion_matrix'] = confusion.tolist()
+                per_class_accuracy = []
+                for i in range(max_classes):
+                    total_class = sum(confusion[i]).item()
+                    if total_class > 0:
+                        class_acc = (confusion[i][i] / total_class).item()
+                        per_class_accuracy.append({
+                            'class': i,
+                            'correct': confusion[i][i].item(),
+                            'total': total_class,
+                            'accuracy': class_acc,
+                            'accuracy_percent': f"{class_acc * 100:.2f}%"
+                        })
+                    else:
+                        per_class_accuracy.append({
+                            'class': i,
+                            'correct': 0,
+                            'total': 0,
+                            'accuracy': 0.0,
+                            'accuracy_percent': "0.00%",
+                            'note': 'no instances'
+                        })
 
-            per_class_accuracy = []
-            for i in range(4):
-                total_class = sum(confusion[i])
-                if total_class > 0:
-                    class_acc = confusion[i][i] / total_class
-                    per_class_accuracy.append({
-                        'class': i,
-                        'correct': int(confusion[i][i]),
-                        'total': int(total_class),
-                        'accuracy': class_acc,
-                        'accuracy_percent': f"{class_acc * 100:.2f}%"
-                    })
-
-            metrics['per_class_accuracy'] = per_class_accuracy
-
-        return metrics
+                metrics['per_class_accuracy'] = per_class_accuracy
+        else:
+            metrics['note'] = 'no ground truth answers provided'
+            category_metrics = {}
+            for category, results in category_results.items():
+                category_metrics[category] = {
+                    'total': results['total'],
+                    'predictions_made': len(results['predictions']),
+                    'has_ground_truth': bool(len(results['truths']) > 0)
+                }
+            metrics['category_metrics'] = category_metrics
+        
+        return convert_to_json_serializable(metrics)
 
     def process_csv_files(
         self,
@@ -2474,47 +2548,27 @@ class LLM:
         answers_csv_path: Optional[str] = None,
         output_dir: str = "./results",
         output_filename: Optional[str] = None,
-        method:Literal[
+        method: Literal[
             "ensemble_vote",
             "generate_answer",
             "confidence_ensemble_vote",
             "generate_answer_selfcheck"
-        ]="ensemble_vote",
+        ] = "ensemble_vote",
         save_intermediate: bool = True,
         **method_kwargs
-    ) -> pd.DataFrame:
-        """
-        Обрабатывает CSV файлы с вопросами и ответами, запускает модель и сохраняет результаты.
-        
-        Args:
-            questions_csv_path: Путь к CSV с вопросами (колонки: question, options, category)
-            answers_csv_path: Опциональный путь к CSV с ответами (колонка: answer)
-            output_dir: Директория для сохранения результатов
-            output_filename: Имя файла результатов (если None - генерируется автоматически)
-            method: Метод предсказания ('generate_answer', 'ensemble_vote', etc.)
-            save_intermediate: Сохранять ли промежуточные результаты при ошибках
-            **method_kwargs: Дополнительные параметры для метода
-            
-        Returns:
-            pd.DataFrame: DataFrame с результатами
-            
-        Структура CSV:
-        - Вопросы: безымянная колонка с номером, затем question, options, category
-        - Ответы: безымянная колонка с номером, затем answer
-        """
-        
+    ) -> Tuple[pd.DataFrame, List[str]]:
+
         self._log("process_csv_files", "начало обработки", {
             "questions_file": questions_csv_path,
             "answers_file": answers_csv_path,
             "output_dir": output_dir,
             "method": method
         }, "DEBUG")
-        
 
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         print(f"📁 Директория результатов: {output_path.absolute()}")
-        
+
         print("📥 Загрузка данных...")
         try:
             questions_df = pd.read_csv(questions_csv_path)
@@ -2522,106 +2576,119 @@ class LLM:
             if unnamed_cols:
                 questions_df = questions_df.rename(columns={unnamed_cols[0]: 'question_id'})
                 print(f"  ✓ Безымянная колонка переименована в 'question_id'")
-            
+
             required_cols = ['question', 'options', 'category']
             missing_cols = [col for col in required_cols if col not in questions_df.columns]
-            
+
             if missing_cols:
                 raise ValueError(f"Отсутствуют необходимые колонки: {missing_cols}")
-            
+
             questions_df['question_id'] = questions_df['question_id'].astype(int)
             questions_df['question'] = questions_df['question'].astype(str)
             questions_df['options'] = questions_df['options'].astype(str)
             questions_df['category'] = questions_df['category'].astype(str)
-            
+
             print(f"  ✓ Загружено {len(questions_df)} вопросов")
             print(f"  ✓ Категории: {questions_df['category'].unique()[:5]}")
-            
+
         except Exception as e:
             self._log("process_csv_files", "ошибка загрузки вопросов", {"error": str(e)}, "DEBUG")
             raise ValueError(f"Ошибка загрузки файла с вопросами: {e}")
+
         answers_df = None
+        answers_array = [] 
+
         if answers_csv_path:
             try:
                 answers_df = pd.read_csv(answers_csv_path)
                 unnamed_cols = [col for col in answers_df.columns if 'Unnamed' in str(col)]
                 if unnamed_cols:
                     answers_df = answers_df.rename(columns={unnamed_cols[0]: 'question_id'})
-                
+
                 if 'answer' not in answers_df.columns:
                     other_cols = [col for col in answers_df.columns if col != 'question_id']
                     if len(other_cols) == 1:
-                        answers_df = answers_df.rename(columns={other_cols[0]: 'answer'})
+                        answers_df = answers_df.rename(columns={other_cols[0]: 'true_answer'})
                     else:
                         raise ValueError("Не могу найти колонку 'answer' в файле с ответами")
+                
                 answers_df['question_id'] = answers_df['question_id'].astype(int)
-                answers_df['answer'] = answers_df['answer'].astype(str)
-                
+                answers_df['true_answer'] = answers_df['true_answer'].astype(str)
+                answers_array = answers_df['true_answer'].tolist()
                 print(f"  ✓ Загружено {len(answers_df)} ответов")
-                
+
                 q_ids = set(questions_df['question_id'])
                 a_ids = set(answers_df['question_id'])
-                
+
                 if q_ids != a_ids:
                     missing_in_answers = q_ids - a_ids
                     missing_in_questions = a_ids - q_ids
-                    
+
                     if missing_in_answers:
                         print(f"  ⚠️  ВНИМАНИЕ: Ответы отсутствуют для вопросов: {sorted(missing_in_answers)[:10]}")
                     if missing_in_questions:
                         print(f"  ⚠️  ВНИМАНИЕ: Лишние ответы для вопросов: {sorted(missing_in_questions)[:10]}")
-                
+
             except Exception as e:
                 self._log("process_csv_files", "ошибка загрузки ответов", {"error": str(e)}, "DEBUG")
                 print(f"  ⚠️  Предупреждение: не удалось загрузить ответы: {e}")
                 answers_df = None
-        
+                answers_array = []
+
         if answers_df is not None:
             merged_df = pd.merge(
                 questions_df,
-                answers_df[['question_id', 'answer']],
+                answers_df[['question_id', 'true_answer']],
                 on='question_id',
                 how='left'
             )
-            merged_df['has_answer'] = merged_df['answer'].notna()
+            merged_df['has_answer'] = merged_df['true_answer'].notna()
             print(f"  ✓ Объединено: {merged_df['has_answer'].sum()} вопросов с ответами, "
-                  f"{len(merged_df) - merged_df['has_answer'].sum()} без ответов")
+                f"{len(merged_df) - merged_df['has_answer'].sum()} без ответов")
         else:
             merged_df = questions_df.copy()
-            merged_df['answer'] = None
+            merged_df['true_answer'] = None
             merged_df['has_answer'] = False
             print("  ✓ Ответы не предоставлены, будут сохранены только предсказания")
-        
+
         print(f"\n🤖 Запуск модели (метод: {method})...")
+        
+        answer_column = "true_answer" if 'true_answer' in merged_df.columns else None
         eval_kwargs = {
             "question_column": "question",
-            "options_column": "options", 
+            "options_column": "options",
             "category_column": "category",
-            "answer_column": "answer" if 'answer' in merged_df.columns else None,
+            "answer_column": answer_column,
             "method": method,
             "method_kwargs": method_kwargs
         }
 
         eval_kwargs = {k: v for k, v in eval_kwargs.items() if v is not None}
-        
+
         if save_intermediate:
             intermediate_path = output_path / "intermediate_data.csv"
             merged_df.to_csv(intermediate_path, index=False)
             print(f"  💾 Промежуточные данные сохранены: {intermediate_path}")
-        
+
         try:
             results_df, metrics = self.evaluate_dataframe(
                 merged_df,
                 **eval_kwargs
             )
-            
+
             print("\n✅ Обработка завершена!")
             print(f"📊 Обработано вопросов: {len(results_df)}")
-            if 'is_correct' in results_df.columns:
-                correct = results_df['is_correct'].sum()
-                accuracy = correct / len(results_df) if len(results_df) > 0 else 0
-                print(f"🎯 Точность: {correct}/{len(results_df)} ({accuracy:.2%})")
             
+            if answer_column and merged_df[answer_column].notna().any():
+                if 'is_correct' in results_df.columns:
+                    correct = results_df['is_correct'].sum()
+                    accuracy = correct / len(results_df) if len(results_df) > 0 else 0
+                    print(f"🎯 Точность на тестовых данных: {correct}/{len(results_df)} ({accuracy:.2%})")
+                else:
+                    print("ℹ️  Колонка 'is_correct' не создана")
+            else:
+                print("ℹ️  Ответы для проверки не предоставлены, точность не рассчитывается")
+        
         except Exception as e:
             self._log("process_csv_files", "ошибка при оценке", {"error": str(e)}, "DEBUG")
             if save_intermediate and intermediate_path.exists():
@@ -2632,60 +2699,95 @@ class LLM:
                 metrics = {'error': str(e)}
             else:
                 raise RuntimeError(f"Ошибка при обработке данных: {e}")
+
         print("\n💾 Сохранение результатов...")
         if output_filename is None:
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             model_name_safe = self.model_name.replace("/", "_")
             output_filename = f"results_{model_name_safe}_{timestamp}.csv"
-        
+
         output_filepath = output_path / output_filename
         
+        results_df = results_df.rename(columns={'predicted': 'answer'})
+        
         final_columns = [
-            'question_id', 'question', 'category', 
-            'predicted', 'processing_time'
+            'question_id', 'question', 'category',
+            'answer',
+            'processing_time'
         ]
         
-        if 'answer' in results_df.columns:
-            final_columns.append('answer')
-        if 'is_correct' in results_df.columns:
-            final_columns.append('is_correct')
+        if 'true_answer' in results_df.columns and results_df['true_answer'].notna().any():
+            final_columns.append('true_answer')
+        
         if 'options' in results_df.columns:
             results_df['options_preview'] = results_df['options'].apply(
                 lambda x: str(x)[:200] + "..." if len(str(x)) > 200 else str(x)
             )
             final_columns.append('options_preview')
-        final_df = results_df[final_columns].copy()
-        final_df.to_csv(output_filepath, index=False, encoding='utf-8-sig')
         
-        print(f"  ✅ Результаты сохранены: {output_filepath}")
-        print(f"  📄 Размер файла: {os.path.getsize(output_filepath) / 1024:.1f} KB")
-        if metrics:
-            stats_filename = output_filepath.with_suffix('.json')
-            metadata = {
-                "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "questions_file": questions_csv_path,
-                "answers_file": answers_csv_path,
-                "model": self.model_name,
-                "method": method,
-                "method_kwargs": method_kwargs,
-                "output_file": str(output_filepath),
-                "metrics": metrics
-            }
-            import json
-            with open(stats_filename, 'w', encoding='utf-8') as f:
-                json.dump(metadata, f, ensure_ascii=False, indent=2)
-            
-            print(f"  📊 Метаданные сохранены: {stats_filename}")
+        if 'is_correct' in results_df.columns and results_df['is_correct'].notna().any():
+            final_columns.append('is_correct')
+        
+        final_df = results_df[final_columns].copy()
+
+        try:
+            final_df.to_csv(output_filepath, index=False, encoding='utf-8-sig')
+            import os
+            if os.path.exists(output_filepath):
+                file_size = os.path.getsize(output_filepath)
+                print(f"  ✅ Файл успешно создан: {output_filepath}")
+                print(f"  📄 Размер файла: {file_size / 1024:.1f} KB ({file_size} байт)")
+                try:
+                    preview_df = pd.read_csv(output_filepath, nrows=3)
+                    print("👀 Предпросмотр (первые 3 строки):")
+                    print(preview_df.to_string(index=False))
+                except Exception as e:
+                    print(f"  👀 Файл создан, но не читается как CSV: {e}")
+            else:
+                print(f"  ❗ ФАЙЛ НЕ СОЗДАН! Проверь путь: {output_filepath}")
+                
+        except Exception as e:
+            print(f"  ❗ Ошибка при сохранении файла: {e}")
+            print("  ❗ Попробуй другой путь или проверь права доступа")
+
+        if not answers_array:
+            print("  ℹ️  Массив ответов пустой (файл с ответами не предоставлен или пуст)")
+
+        if metrics and self.DEBUG:
+            print("\n📊 МЕТРИКИ:")
+            print("-" * 40)
+            for key, value in metrics.items():
+                if key not in ['confusion_matrix', 'per_class_accuracy', 'category_metrics']:
+                    print(f"  {key}: {value}")
+            print("-" * 40)
+
 
         print(f"\n{'='*60}")
         print("СВОДКА ОБРАБОТКИ")
         print(f"{'='*60}")
         print(f"Обработано вопросов: {len(final_df)}")
         print(f"Категории: {', '.join(sorted(final_df['category'].unique()))}")
-        
-        if 'is_correct' in final_df.columns:
+
+        print(f"\n📊 ИНФОРМАЦИЯ О МАССИВЕ ОТВЕТОВ:")
+        print(f"  Всего ответов в массиве: {len(answers_array)}")
+        if answers_array:
+            null_count = sum(1 for a in answers_array if pd.isna(a) or str(a).strip() == '' or str(a).lower() == 'none')
+            print(f"  Пустых ответов: {null_count}")
+            unique_answers = len(set(str(a) for a in answers_array if pd.notna(a)))
+            print(f"  Уникальных ответов: {unique_answers}")
+            
+            print(f"\n📖 Первые 10 ответов:")
+            print("-" * 40)
+            for i, answer in enumerate(answers_array[:10]):
+                answer_str = str(answer) if pd.notna(answer) else "[пусто]"
+                print(f"{i+1:3d}. {answer_str[:100]}{'...' if len(answer_str) > 100 else ''}")
+            print("-" * 40)
+        else:
+            print("  ℹ️  Массив ответов пустой (файл с ответами не предоставлен)")
+
+        if 'is_correct' in final_df.columns and final_df['is_correct'].notna().any():
             accuracy = final_df['is_correct'].mean()
-            print(f"Точность: {accuracy:.2%}")
+            print(f"\n🎯 Точность: {accuracy:.2%}")
             if len(final_df['category'].unique()) > 1:
                 print("\n📈 Статистика по категориям:")
                 for category in sorted(final_df['category'].unique()):
@@ -2693,833 +2795,39 @@ class LLM:
                     if len(cat_df) > 0 and 'is_correct' in cat_df.columns:
                         cat_acc = cat_df['is_correct'].mean()
                         print(f"  {category}: {cat_acc:.2%} ({len(cat_df)} вопросов)")
-        
+        else:
+            print("\nℹ️  Точность не рассчитана (нет ответов для проверки)")
+
         avg_time = final_df['processing_time'].mean() if 'processing_time' in final_df.columns else 0
-        print(f"Среднее время на вопрос: {avg_time:.2f} секунд")
-        print(f"Файл результатов: {output_filepath}")
+        print(f"\n⏱️  Среднее время на вопрос: {avg_time:.2f} секунд")
+        print(f"💾 Файл результатов: {output_filepath}")
         print(f"{'='*60}")
-        
+
         self._log("process_csv_files", "обработка завершена", {
             "output_file": str(output_filepath),
             "rows_processed": len(final_df),
+            "answers_count": len(answers_array),
             "has_answers": answers_csv_path is not None
         }, "DEBUG")
-        
-        return final_df
+
+        return final_df, answers_array
 
 
-    def process_questions_only(
-        self,
-        questions_csv_path: str,
-        output_dir: str = "./results",
-        **kwargs
-    ) -> pd.DataFrame:
-        """Упрощенный вызов для обработки только вопросов без ответов"""
-        return self.process_csv_files(
-            questions_csv_path=questions_csv_path,
-            answers_csv_path=None,
-            output_dir=output_dir,
-            **kwargs
-        )
+exp = LLM(
+    model=model_14b,
+    tokenizer=tokenizer_14b,
+    deep_debug=True,
+    use_llm_parsing=True,
+    use_selfcheck=False,
+    llm_few_shot_generation=False,
+    llm_cot_generation=True,
+)
 
 
+exp.process_csv_files(
+    questions_csv_path="/kaggle/input/LR1_dev.csv",
+    answers_csv_path="/kaggle/input/LR1_dev_answers.csv",
+    output_dir="/kaggle/working",
+    method="generate_answer"
+)
 
-
-class OpenRouterLLM(LLM):
-    """
-    Наследник твоего LLM класса, который использует OpenRouter API вместо локальной модели.
-    
-    ВСЕ твои методы работают без изменений, меняется только генерация ответов.
-    
-    Пример использования:
-    ```
-    from openrouter_llm import OpenRouterLLM
-    
-    model = OpenRouterLLM(
-        model_name="qwen/qwen2.5-14b-instruct",
-        api_key="sk-or-xxx",  # или через OPENROUTER_API_KEY
-        debug=True
-    )
-    
-    # ВСЕ твои методы доступны:
-    results = model.evaluate_dataframe(df, method="ensemble_vote")
-    model.process_csv_files(...)
-    # и т.д.
-    ```
-    """
-    
-    def __init__(
-        self,
-        model_name: str = "qwen/qwen2.5-14b-instruct",
-        api_key: Optional[str] = None,
-        device: str = "cuda",
-        _prompts: Optional[Dict] = None,
-        _few_shot_prompts: Optional[Dict] = None,
-        model=None,   
-        tokenizer=None, 
-        quantization_config=None,
-        debug: bool = False,
-        deep_debug: bool = False,
-        use_llm_parsing: bool = True,
-        use_selfcheck: bool = False,
-        llm_cot_generation: bool = True,
-        llm_few_shot_generation: bool = True,
-        **kwargs
-    ):
-        """
-        Инициализация OpenRouter клиента.
-        Наследуем все параметры родительского класса.
-        """
-        
-        # Получаем API ключ
-        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
-        if not self.api_key:
-            raise ValueError(
-                "API ключ OpenRouter обязателен.\n"
-                "1. Установи переменную окружения: export OPENROUTER_API_KEY='sk-or-xxx'\n"
-                "2. Или передай напрямую: OpenRouterLLM(api_key='sk-or-xxx')"
-            )
-        
-        # Сохраняем имя модели для API
-        self.api_model_name = model_name
-        
-        # ИНИЦИАЛИЗИРУЕМ РОДИТЕЛЬСКИЙ КЛАСС С ФИКТИВНЫМИ ПАРАМЕТРАМИ
-        # Передаем минимальные фиктивные объекты чтобы избежать загрузки модели
-        super().__init__(
-            model_name=model_name,  # все равно не будет использоваться
-            device=device,
-            _prompts=_prompts,
-            _few_shot_prompts=_few_shot_prompts,
-            model=self._create_fake_model(),      # фиктивная модель
-            tokenizer=self._create_fake_tokenizer(),  # фиктивный токенайзер
-            quantization_config=None,  # не нужно
-            debug=debug,
-            deep_debug=deep_debug,
-            use_llm_parsing=use_llm_parsing,
-            use_selfcheck=use_selfcheck,
-            llm_cot_generation=llm_cot_generation,
-            llm_few_shot_generation=llm_few_shot_generation,
-            **kwargs
-        )
-        
-        # Статистика
-        self.request_count = 0
-        self.total_time = 0
-        
-        print(f"🌐 OpenRouter LLM (наследник) готов")
-        print(f"   Модель API: {self.api_model_name}")
-        print(f"   Отладка: {'ВКЛ' if debug else 'ВЫКЛ'}")
-    
-    def _create_fake_model(self):
-        """Создает фиктивную модель для передачи в родительский конструктор"""
-        class FakeModel:
-            def generate(self, **kwargs): 
-                # Этот метод никогда не должен вызываться
-                raise RuntimeError("FakeModel.generate() не должен вызываться")
-            def eval(self): return self
-            def to(self, device): return self
-        
-        return FakeModel()
-    
-    def _create_fake_tokenizer(self):
-        """Создает фиктивный токенайзер"""
-        class FakeTokenizer:
-            def __init__(self):
-                self.pad_token = "<|endoftext|>"
-                self.eos_token = "<|endoftext|>"
-                self.pad_token_id = 50256
-            
-            def __call__(self, text, return_tensors=None, **kwargs):
-                if return_tensors == "pt":
-                    return {
-                        "input_ids": torch.zeros((1, 10), dtype=torch.long),
-                        "attention_mask": torch.ones((1, 10), dtype=torch.long)
-                    }
-                return text
-            
-            def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True, **kwargs):
-                # Простой формат для API
-                formatted = ""
-                for msg in messages:
-                    role = msg["role"]
-                    content = msg["content"]
-                    formatted += f"{role.capitalize()}: {content}\n\n"
-                
-                if add_generation_prompt:
-                    formatted += "Assistant: "
-                
-                return formatted
-            
-            def decode(self, tokens, skip_special_tokens=True, **kwargs):
-                return ""
-        
-        return FakeTokenizer()
-    
-    def generate_cot_instruction(
-        self,
-        question: str,
-        topic: str,
-        encoded_options,
-        max_tokens: int = 1000
-    ) -> str:
-        """
-        Генерирует CoT инструкцию через OpenRouter API.
-        """
-        self._log("generate_cot_instruction", "начало через API", {
-            "topic": topic,
-            "question_len": len(question),
-            "max_tokens": max_tokens
-        }, "DEBUG")
-        
-        options = self._options_parser(encoded_options)
-        if not options or (len(options) == 1 and options[0] == "Варианты не предоставлены"):
-            self._log("generate_cot_instruction", "нет опций", None, "DEBUG")
-            return ""
-        
-        options_text = "\n".join([f"{i}. {opt}" for i, opt in enumerate(options)])
-        
-        system_prompt = """Ты эксперт по методике Chain of Thought (CoT). 
-    Создай структурированную пошаговую инструкцию для решения ЗАДАЧИ.
-
-    ТРЕБОВАНИЯ:
-    1. Инструкция должна быть КОНКРЕТНОЙ для данной задачи
-    2. Используй нумерованные шаги (1., 2., 3., ...)
-    3. Включи логические проверки и анализ вариантов
-    4. Учитывай специфику категории задачи
-    5. Заверши четким указанием формата ответа
-
-    ФОРМАТ ВЫВОДА:
-    Начни сразу с пошаговой инструкции, без вступлений."""
-
-        user_prompt = f"""Создай Chain of Thought инструкцию для решения:
-
-    КАТЕГОРИЯ: {topic}
-
-    ВОПРОС:
-    {question}
-
-    ВАРИАНТЫ ОТВЕТОВ (всего {len(options)}):
-    {options_text}
-
-    Инструкция должна помочь систематически решить эту задачу. 
-    Индексы вариантов: от 0 до {len(options)-1}.
-
-    CoT инструкция:"""
-        
-        # Вместо direct_prompt - прямой вызов API
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-        
-        response = self._call_openrouter_api(
-            messages=messages,
-            temperature=0.3,
-            max_tokens=max_tokens
-        )
-        
-        if response:
-            self._log("generate_cot_instruction", "CoT сгенерирована через API", {
-                "length": len(response),
-                "preview": response[:200]
-            }, "DEBUG")
-            
-            if self.DEEP_DEBUG:
-                print(f"\n[DEEP_DEBUG] Сгенерированная CoT инструкция (API):")
-                print(f"{response}")
-                print("-" * 80)
-            
-            return response.strip()
-        else:
-            self._log("generate_cot_instruction", "API не вернул CoT", None, "DEBUG")
-            return ""
-    def generate_contextual_few_shot(
-        self,
-        question: str,
-        topic: str,
-        encoded_options,
-        num_examples: int = 2,
-        max_tokens_per_example: int = 1000
-    ) -> str:
-        """
-        Генерирует few-shot примеры через OpenRouter API.
-        """
-        self._log("generate_contextual_few_shot", "начало через API", {
-            "topic": topic,
-            "num_examples": num_examples,
-            "question_preview": question[:200]
-        }, "DEBUG")
-
-        options = self._options_parser(encoded_options)
-        num_options = len(options) if options and options[0] != "Варианты не предоставлены" else 4
-        
-        system_prompt = f"""Ты эксперт по созданию few-shot инструкций для LLM по предмету "{topic}"
-
-    ТРЕБОВАНИЯ К ПРИМЕРАМ:
-    1. ТЕМАТИЧЕСКАЯ СМЕЖНОСТЬ: Примеры должны быть из той же тематики, что и оригинальный вопрос
-    2. СЛОЖНОСТЬ: Примеры должны быть примерно той же сложности
-    3. ФОРМАТ: Каждый пример должен содержать:
-    - Реалистичный вопрос по теме
-    - Варианты ответов (примерно {num_options} вариантов)
-    - Правильный ответ с индексом (ровно один)
-    4. СТРУКТУРА: Один пример = один блок с четкой структурой
-
-    ФОРМАТ ВЫВОДА для каждого примера:
-    Пример [N]:
-    Вопрос: [текст вопроса]
-    Варианты ответа:
-    0. [вариант 0]
-    1. [вариант 1]
-    ...
-    Ответ: [индекс]
-
-    Не пиши ничего кроме примеров."""
-
-        user_prompt = f"""Создай {num_examples} тематически смежных примера для few-shot обучения.
-
-    ОРИГИНАЛЬНЫЙ ВОПРОС (для примера тематики):
-    {question}
-
-    ОПИСАНИЕ ОРИГИНАЛА:
-    - Категория: {topic}
-    - Количество вариантов: {num_options}
-
-    Начни генерировать примеры:"""
-
-        # Прямой вызов API
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-        
-        response = self._call_openrouter_api(
-            messages=messages,
-            temperature=0.4,
-            max_tokens=max_tokens_per_example * num_examples,
-            top_p=0.9
-        )
-        
-        if response:
-            # Форматируем результат
-            formatted_examples = self._validate_and_format_few_shot(response, topic, num_options)
-            
-            self._log("generate_contextual_few_shot", "примеры сгенерированы через API", {
-                "generated_length": len(formatted_examples),
-                "num_examples_found": formatted_examples.count("Пример"),
-                "preview": formatted_examples[:300]
-            }, "DEBUG")
-            
-            if self.DEEP_DEBUG:
-                print(f"\n[DEEP_DEBUG] Сгенерированные few-shot примеры через API:")
-                print("-" * 80)
-                print(formatted_examples)
-                print("-" * 80)
-            
-            return formatted_examples
-        else:
-            self._log("generate_contextual_few_shot", "API не вернул примеры", None, "DEBUG")
-            return self._create_fallback_examples(topic, num_options)
-    def _call_openrouter_api(self, messages: List[Dict], **kwargs) -> str:
-        """
-        Вызывает OpenRouter API.
-        Заменяет self.model.generate().
-        """
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        
-        data = {
-            "model": self.api_model_name,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", 0.1),
-            "max_tokens": kwargs.get("max_tokens", 1000),
-        }
-        
-        # Добавляем опциональные параметры
-        if "top_p" in kwargs:
-            data["top_p"] = kwargs["top_p"]
-        
-        self._log("_call_openrouter_api", "отправка запроса", {
-            "model": data["model"],
-            "temperature": data["temperature"],
-            "messages_count": len(messages)
-        }, "DEBUG")
-        
-        start_time = time.time()
-        
-        try:
-            response = requests.post(url, headers=headers, json=data, timeout=60)
-            response.raise_for_status()
-            
-            result = response.json()
-            text = result["choices"][0]["message"]["content"].strip()
-            
-            elapsed = time.time() - start_time
-            self.request_count += 1
-            self.total_time += elapsed
-            
-            self._log("_call_openrouter_api", "получен ответ", {
-                "время": f"{elapsed:.2f}с",
-                "длина": len(text)
-            }, "DEBUG")
-            
-            return text
-            
-        except requests.exceptions.RequestException as e:
-            self._log("_call_openrouter_api", f"ошибка API: {e}", None, "DEBUG")
-            
-            # Fallback: возвращаем фиктивный ответ для продолжения работы
-            if self.DEBUG:
-                print(f"⚠️  API ошибка, возвращаю фиктивный ответ")
-            
-            return "Ответ: 0"
-    
-    def generate_answer(
-        self, 
-        question: str, 
-        encoded_options, 
-        category: str, 
-        dramatic: bool = True,
-        tokens: int = 1000,
-        temperature: float = 0.1,
-        few_shot: bool = True,
-        use_llm_parsing: Optional[bool] = None,
-        use_selfcheck: Optional[bool] = None,
-        llm_cot_generation: Optional[bool] = None,
-        llm_few_shot_generation: Optional[bool] = None,
-        force_diversity: bool = False,
-        **kwargs
-    ) -> int:
-        """
-        ПЕРЕОПРЕДЕЛЕННАЯ версия generate_answer.
-        Вместо вызова self.model.generate() вызывает API.
-        
-        ВСЯ остальная логика (парсинг опций, генерация промптов, etc) 
-        остается из родительского класса.
-        """
-        
-        # Вызываем родительский метод для всей подготовительной работы
-        # Но перехватываем момент генерации
-        
-        # Параметры
-        if use_llm_parsing is None:
-            use_llm_parsing = self.USE_LLM_PARSING
-        if use_selfcheck is None:
-            use_selfcheck = self.USE_SELFCHECK
-        if llm_cot_generation is None:
-            llm_cot_generation = self.LLM_COT_GENERATION
-        if llm_few_shot_generation is None:
-            llm_few_shot_generation = self.LLM_FEW_SHOT_GENERATION
-        
-        self._log("generate_answer (OpenRouter)", "начало", {
-            "category": category,
-            "temperature": temperature,
-            "tokens": tokens
-        }, "DEBUG")
-        
-        # Используем родительские методы для парсинга опций
-        options = self._options_parser(encoded_options)
-        if not options or (len(options) == 1 and options[0] == "Варианты не предоставлены"):
-            self._log("generate_answer", "нет вариантов", None, "DEBUG")
-            return 0
-        
-        # Используем родительский метод для генерации промпта
-        result = self.generate_prompt(
-            question=question, 
-            encoded_options=options, 
-            topic=category,
-            drammatic=True,
-            few_shot=few_shot,
-            llm_cot_generation=llm_cot_generation,
-            llm_few_shot_generation=llm_few_shot_generation
-        )
-        
-        if result is None:
-            return 0
-        
-        system_prompt, user_prompt = result
-        
-        # Формируем сообщения для API
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-        
-        # ВМЕСТО ВЫЗОВА МОДЕЛИ - ВЫЗЫВАЕМ API
-        response = self._call_openrouter_api(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=tokens,
-            top_p=0.9 if force_diversity or temperature > 0 else None
-        )
-        
-        # Используем родительский метод для парсинга ответа
-        parsed = self.parse_answer_index(response, use_llm_parsing=use_llm_parsing)
-        
-        self._log_response(
-            "OPENROUTER_RESPONSE",
-            response,
-            parsed,
-            None,
-            {
-                "category": category,
-                "temperature": temperature,
-                "response_length": len(response)
-            }
-        )
-        
-        return parsed
-    
-    # =============================================
-    # ДОПОЛНИТЕЛЬНЫЕ МЕТОДЫ ДЛЯ OPENROUTER
-    # =============================================
-    
-    def get_api_stats(self) -> Dict:
-        """Возвращает статистику использования API"""
-        return {
-            "requests": self.request_count,
-            "total_time": self.total_time,
-            "avg_time": self.total_time / self.request_count if self.request_count > 0 else 0,
-            "model": self.api_model_name,
-            "debug_logs": len(self.debug_logs)
-        }
-    
-    def print_api_stats(self):
-        """Показывает статистику API"""
-        stats = self.get_api_stats()
-        print(f"\n📊 OpenRouter API статистика:")
-        print(f"   Запросов: {stats['requests']}")
-        print(f"   Общее время: {stats['total_time']:.1f}с")
-        print(f"   Среднее время: {stats['avg_time']:.2f}с")
-        print(f"   Модель: {stats['model']}")
-
-    def direct_prompt(
-        self, 
-        user_prompt:str,
-        system_prompt:str,
-        tokens:int = 1000,
-        temperature:float = 0.1,
-        few_shot: bool = True
-    ):
-        """
-        Прямой промпт через OpenRouter API.
-        Заменяет локальную генерацию на API вызов.
-        """
-        self._log("direct_prompt", "начало", {
-            "user_len": len(user_prompt),
-            "system_len": len(system_prompt),
-            "temperature": temperature,
-            "tokens": tokens
-        }, "DEBUG")
-        
-        # Формируем сообщения для API
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-        
-        # В OpenRouter нет apply_chat_template, формируем напрямую
-        # Используем фиктивный токенайзер для совместимости
-        text = self.tokenizer.apply_chat_template(
-            messages, 
-            tokenize=False, 
-            add_generation_prompt=True
-        )
-        
-        self._log("direct_prompt", "сообщения подготовлены", {
-            "messages_count": len(messages),
-            "system_preview": system_prompt[:100],
-            "user_preview": user_prompt[:100]
-        }, "DEBUG")
-        
-        # Вызываем API вместо локальной генерации
-        response = self._call_openrouter_api(
-            messages=messages,
-            temperature=temperature,
-            max_tokens=tokens
-        )
-        
-        self._log("direct_prompt", "получен ответ", {
-            "response_length": len(response),
-            "response_preview": response[:200] if response else "пусто"
-        }, "DEBUG")
-        
-        if self.DEEP_DEBUG:
-            print(f"[DEEP_DEBUG] direct_prompt response ({len(response)} chars):")
-            print(f"{response[:500]}...")
-        
-        return response
-
-    def llm_parse_answer(self, raw_response: str) -> int:
-        """
-        Использует OpenRouter API для парсинга ответа вместо локальной модели.
-        """
-        self._log("llm_parse_answer", "начало через API", {"raw_len": len(raw_response)}, "DEEP_DEBUG")
-        
-        # Системный промпт для парсинга
-        system_prompt = """Ты - ассистент по извлечению чисел. Извлеки ЧИСЛО из текста.
-
-    Пример 1:
-    Текст: "Ответ: 2. Этот вариант правильный потому что..."
-    Извлеченное число: 2
-
-    Пример 2:
-    Текст: "Я считаю, что правильный вариант третий"
-    Извлеченное число: 2
-
-    Пример 3:
-    Текст: "Вариант А кажется верным"
-    Извлеченное число: 0
-
-    ПРАВИЛА:
-    1. Извлекай ТОЛЬКО число (0, 1, 2, 3, ...)
-    2. Если в тексте несколько чисел - берем первое
-    3. Если указана буква (A=0, B=1, C=2, D=3)
-    4. Если не можешь извлечь - возвращай 0
-    5. Только число, без текста"""
-        
-        user_prompt = f"""Извлеки число из текста:
-
-    Текст: {raw_response}
-
-    Извлеченное число:"""
-        
-        # Формируем запрос к API
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-        
-        try:
-            # Вызываем API
-            response = self._call_openrouter_api(
-                messages=messages,
-                temperature=0.1,
-                max_tokens=50
-            )
-            
-            self._log("llm_parse_answer", "API ответ", {"response": response}, "DEEP_DEBUG")
-            
-            # Парсим ответ (может быть пустым или содержать текст)
-            if not response:
-                return 0
-            
-            # Извлекаем число из ответа API
-            import re
-            
-            # Пробуем получить чистое число
-            try:
-                num = int(response.strip())
-                return num
-            except:
-                pass
-            
-            # Ищем числа в тексте
-            patterns = [
-                r'^\s*(\d+)\s*$',
-                r'ответ[:\s]*(\d+)',
-                r'число[:\s]*(\d+)',
-                r'номер[:\s]*(\d+)',
-                r'\b(\d+)\b',
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, response, re.IGNORECASE)
-                if match:
-                    try:
-                        return int(match.group(1))
-                    except:
-                        continue
-            
-            # Буквы
-            letter_match = re.search(r'\b([a-d])\b', response, re.IGNORECASE)
-            if letter_match:
-                letter = letter_match.group(1).upper()
-                return ord(letter) - ord('A')
-            
-            return 0
-            
-        except Exception as e:
-            self._log("llm_parse_answer", "ошибка API парсинга", {"error": str(e)}, "DEBUG")
-            return 0
-# =============================================
-# ТЕСТИРОВАНИЕ
-# =============================================
-
-def test_inheritance():
-    """Тестирует что наследование работает правильно"""
-    
-    print("🧪 Тестирую OpenRouterLLM (наследник)...")
-    
-    model = OpenRouterLLM(
-        model_name="qwen/qwen3-14b",
-        api_key="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",
-        debug=True,
-        _prompts=PROMPTS,
-        _few_shot_prompts=FEW_SHOT_PROMPTS
-    )
-    print(f"✅ Доступны методы родителя:")
-    print(f"   - _log: {hasattr(model, '_log')}")
-    print(f"   - _options_parser: {hasattr(model, '_options_parser')}")
-    print(f"   - parse_answer_index: {hasattr(model, 'parse_answer_index')}")
-    print(f"   - generate_prompt: {hasattr(model, 'generate_prompt')}")
-    print(f"   - evaluate_dataframe: {hasattr(model, 'evaluate_dataframe')}")
-    
-    question = "Сколько будет 2 + 2?"
-    options = ["3", "4", "5", "6"]
-    
-    try:
-        answer = model.generate_answer(
-            question=question,
-            encoded_options=options,
-            category="math",
-            temperature=0.1
-        )
-        
-        print(f"🤖 Ответ через API: {answer}")
-        
-        ensemble_answer, distribution = model.ensemble_vote(
-            question=question,
-            encoded_options=options,
-            category="math",
-            temperatures=[0.1, 0.3, 0.5]
-        )
-        
-        print(f"🤖 Ensemble ответ: {ensemble_answer}")
-        print(f"📊 Распределение: {distribution}")
-        
-        model.print_api_stats()
-        
-        print("✅ Наследование работает правильно!")
-        
-    except Exception as e:
-        print(f"❌ Ошибка теста: {e}")
-
-
-def test_openrouter_directly(api_key):
-    """Прямой тест OpenRouter API без всей сложности"""
-    
-    api_key = api_key or os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        print("❌ Нет API ключа")
-        return
-    
-    print("🧪 Прямой тест OpenRouter API...")
-    
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    
-    data = {
-        "model": "qwen/qwen3-14b",
-        "messages": [
-            {
-                "role": "user",
-                "content": "Сколько будет 2+2? Ответь одним числом."
-            }
-        ],
-        "temperature": 0.1,
-        "max_tokens": 50
-    }
-    
-    try:
-        print(f"📤 Отправляю запрос к {data['model']}...")
-        response = requests.post(url, headers=headers, json=data, timeout=30)
-        
-        print(f"📥 Статус: {response.status_code}")
-        
-        if response.status_code == 200:
-            result = response.json()
-            print("Получен ответ:")
-            pprint(result)
-            answer = result["choices"][0]["message"]["content"]
-            print(f"✅ Ответ: {answer}")
-        else:
-            print(f"❌ Ошибка: {response.text}")
-            
-            # Попробуем другую модель
-            print("🔄 Пробую модель meta-llama/llama-3.1-8b-instruct...")
-            data["model"] = "meta-llama/llama-3.1-8b-instruct"
-            
-            response = requests.post(url, headers=headers, json=data, timeout=30)
-            print(f"📥 Статус: {response.status_code}")
-            
-            if response.status_code == 200:
-                result = response.json()
-                answer = result["choices"][0]["message"]["content"]
-                print(f"✅ Ответ (Llama): {answer}")
-            else:
-                print(f"❌ Ошибка: {response.text}")
-                
-    except Exception as e:
-        print(f"❌ Исключение: {e}")
-
-
-def test_openrouter_csv(api_key):
-    """
-    Тестирует OpenRouterLLM на CSV файлах.
-    """
-    
-    print("🧪 ТЕСТИРОВАНИЕ OpenRouterLLM с CSV файлами")
-    print("=" * 60)
-
-    api_key = api_key or os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        print("❌ OPENROUTER_API_KEY не установлен!")
-        print("   Сделай: export OPENROUTER_API_KEY='sk-or-xxx'")
-        return
-    
-    print(f"✅ API ключ найден: {'*' * 8}{api_key[-4:]}")
-    print("\n🤖 Создаю OpenRouterLLM...")
-    
-    model = OpenRouterLLM(
-        model_name="qwen/qwen3-14b", 
-        api_key=api_key,
-        debug=True,
-        llm_cot_generation=True,
-        llm_few_shot_generation=False,
-        _prompts=PROMPTS,
-        _few_shot_prompts=FEW_SHOT_PROMPTS
-    )
-
-    print("-" * 50)
-
-    # Проверяем конкретные файлы
-    files_to_check = ["LR1_dev.csv", "LR1_dev_answers.csv", "main.py"]
-    for file in files_to_check:
-        if os.path.exists(file):
-            size = os.path.getsize(file)
-            print(f"✅ {file:25} - есть ({size:,} байт)")
-        else:
-            print(f"❌ {file:25} - отсутствует")
-    print("\n🧪 Тестирую process_csv_files...")
-    
-    try:
-        results_df = model.process_csv_files(
-            questions_csv_path="lab1/LR1_dev.csv",
-            answers_csv_path="lab1/LR1_dev_answers.csv",
-            output_dir="",
-            method="generate_answer"
-        )
-        
-        print("✅ Обработка CSV завершена!")
-        print("\n📊 Результаты:")
-    except Exception as e:
-        print(f"❌ Ошибка при обработке CSV: {e}")
-    print("\n✅ ТЕСТИРОВАНИЕ ЗАВЕРШЕНО!")
-
-
-
-if __name__ == "__main__":
-    # test_openrouter_directly(
-    #     api_key="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"
-    # )
-    test_openrouter_csv(
-        api_key="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"
-    )
